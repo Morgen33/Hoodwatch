@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Hoodwatch",
+  "version": "1.0.0",
+  "description": "See who's reacting in your X Spaces. Syncs reactions to your Hoodwatch dashboard.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://gyspxodpxmpzxwskrbia.supabase.co/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Hoodwatch", "default_icon": { "128": "icon128.png" } },
+  "icons": { "128": "icon128.png" },
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

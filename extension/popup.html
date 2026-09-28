@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { width: 300px; margin: 0; padding: 14px; background: #0b0b0d; color: #ededf0; font: 13px/1.45 system-ui, sans-serif; }
+      h1 { font-size: 16px; margin: 0 0 4px; font-weight: 900; }
+      h1 span { color: #c6ff3d; }
+      p { color: #8b8b96; margin: 0 0 10px; font-size: 12px; }
+      input { width: 100%; box-sizing: border-box; background: #1b1b21; color: #ededf0; border: 1px solid #26262e; border-radius: 8px; padding: 8px; font-family: ui-monospace, monospace; font-size: 11px; }
+      button { margin-top: 8px; width: 100%; background: #c6ff3d; color: #0b0b0d; border: 0; border-radius: 8px; padding: 8px; font-weight: 700; cursor: pointer; }
+      #status { margin-top: 8px; font-size: 12px; min-height: 16px; }
+      a { color: #c6ff3d; }
+    </style>
+  </head>
+  <body>
+    <h1>hood<span>watch</span></h1>
+    <p>Paste the key from your <a href="https://hoodwatch.vercel.app/dashboard/extension" target="_blank" id="dash">dashboard → Extension</a>.</p>
+    <input id="key" placeholder="hw_…" autocomplete="off" spellcheck="false" />
+    <button id="save">Save key</button>
+    <div id="status"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>
