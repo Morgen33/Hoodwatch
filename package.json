@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "zip-extension": "rm -f public/hoodwatch-extension.zip hoodwatch-extension-store.zip && zip -qr public/hoodwatch-extension.zip extension && (cd extension && zip -qr ../hoodwatch-extension-store.zip .)"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

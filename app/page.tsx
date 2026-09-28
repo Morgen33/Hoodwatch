@@ -62,7 +62,8 @@ export default async function Home({ searchParams }: PageProps<"/">) {
         </ol>
         <p className="mt-6 text-xs muted max-w-2xl">
           Reactions in a Space are visible to everyone in the room. Hoodwatch records them for the host. Be upfront with
-          your listeners — e.g. “we track reactions for rewards” in your Space title.
+          your listeners — e.g. “we track reactions for rewards” in your Space title.{" "}
+          <a className="link" href="/privacy">Privacy policy</a>
         </p>
       </section>
     </main>

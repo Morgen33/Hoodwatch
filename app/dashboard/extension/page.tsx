@@ -25,12 +25,10 @@ export default async function ExtensionPage() {
         <h2 className="font-bold">2. Install the extension</h2>
         <ol className="text-sm space-y-1.5 list-decimal pl-5">
           <li>
-            Download the <code>extension</code> folder from the{" "}
-            <a className="link" href="https://github.com/Morgen33/Hoodwatch/tree/main/extension" target="_blank" rel="noreferrer">
-              Hoodwatch repo
-            </a>{" "}
-            (Chrome Web Store listing coming soon).
+            <a className="btn btn-primary my-1" href="/hoodwatch-extension.zip" download>Download the extension</a>{" "}
+            <span className="muted">(Chrome Web Store listing coming soon)</span>
           </li>
+          <li>Double-click the zip to unzip it, and move the <code>extension</code> folder somewhere permanent (like Documents).</li>
           <li>Go to <code>chrome://extensions</code>, turn on <b>Developer mode</b>.</li>
           <li>Click <b>Load unpacked</b> and pick the <code>extension</code> folder.</li>
           <li>Click the Hoodwatch icon in your toolbar, paste your key, hit Save.</li>
