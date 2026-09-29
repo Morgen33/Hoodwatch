@@ -8,7 +8,7 @@ const buffers = new Map();
 let timer = null;
 
 function buf(room) {
-  if (!buffers.has(room)) buffers.set(room, { title: null, reactions: [], occupancy: [], ended: false, tabs: new Set() });
+  if (!buffers.has(room)) buffers.set(room, { title: null, reactions: [], occupancy: [], names: new Map(), ended: false, tabs: new Set() });
   return buffers.get(room);
 }
 
@@ -16,7 +16,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   if (!msg || !msg.hw || !msg.data || !msg.data.room) return;
   const b = buf(msg.data.room);
   if (sender.tab) b.tabs.add(sender.tab.id);
-  const { room, ...d } = msg.data;
+  const { room: _room, ...d } = msg.data;
   if (msg.type === "join") { b.title = d.title || b.title; b.ended = false; b.dirty = true; }
   if (msg.type === "reaction") b.reactions.push(d);
   if (msg.type === "occupancy") {
@@ -25,6 +25,8 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     if (!last || d.ts - last.ts > 15000) b.occupancy.push(d);
   }
   if (msg.type === "leave") b.ended = true;
+  if (msg.type === "name") b.names.set(d.userId, d);
+  if (msg.type === "names" && Array.isArray(d.names)) for (const n of d.names.slice(0, 2000)) b.names.set(n.userId, n);
   schedule();
 });
 
@@ -40,12 +42,14 @@ async function flush() {
   timer = null;
   const { hwKey } = await chrome.storage.local.get("hwKey");
   for (const [room, b] of buffers) {
-    const hasWork = b.reactions.length || b.occupancy.length || b.ended || b.dirty;
+    const hasWork = b.reactions.length || b.occupancy.length || b.names.size || b.ended || b.dirty;
     if (!hasWork) continue;
     if (!hwKey) { tell(b.tabs, "nokey"); continue; }
 
     const reactions = b.reactions.splice(0, 1000);
     const occupancy = b.occupancy.splice(0, 200);
+    const names = [...b.names.values()].slice(0, 2000);
+    for (const n of names) b.names.delete(n.userId);
     const ended = b.ended;
     try {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/ingest_events`, {
@@ -53,7 +57,7 @@ async function flush() {
         headers: { "content-type": "application/json", apikey: SUPABASE_KEY, authorization: `Bearer ${SUPABASE_KEY}` },
         body: JSON.stringify({
           p_token: hwKey, p_space_id: room, p_title: b.title,
-          p_reactions: reactions, p_occupancy: occupancy, p_ended: ended,
+          p_reactions: reactions, p_occupancy: occupancy, p_ended: ended, p_names: names,
         }),
       });
       if (res.ok) {
@@ -63,16 +67,21 @@ async function flush() {
         tell(b.tabs, "ok");
       } else {
         const text = await res.text();
-        if (/invalid token|bad token/.test(text)) { tell(b.tabs, "badkey"); b.reactions.unshift(...reactions); continue; }
+        if (/invalid token|bad token/.test(text)) {
+          tell(b.tabs, "badkey"); b.reactions.unshift(...reactions); b.occupancy.unshift(...occupancy);
+          for (const n of names) b.names.set(n.userId, n);
+          continue;
+        }
         throw new Error(text);
       }
     } catch {
       // put them back and retry next round
       b.reactions.unshift(...reactions);
       b.occupancy.unshift(...occupancy);
+      for (const n of names) if (!b.names.has(n.userId)) b.names.set(n.userId, n);
       tell(b.tabs, "error");
     }
-    if (b.reactions.length || b.occupancy.length) schedule();
+    if (b.reactions.length || b.occupancy.length || b.names.size) schedule();
   }
 }
 

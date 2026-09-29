@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Hoodwatch",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "See who's reacting in your X Spaces. Syncs reactions to your Hoodwatch dashboard.",
   "permissions": ["storage"],
   "host_permissions": ["https://gyspxodpxmpzxwskrbia.supabase.co/*"],
