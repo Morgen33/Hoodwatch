@@ -5,7 +5,7 @@
   if (window.__hoodwatch) return;
 
   const TAG = "__hoodwatch__";
-  const state = { room: null, connected: false, count: 0, listeners: null, feed: [], board: new Map(), sync: "idle", min: false, tab: "feed" };
+  const state = { room: null, connected: false, count: 0, listeners: null, feed: [], board: new Map(), emojiTotals: new Map(), sync: "idle", min: false, tab: "feed" };
 
   const safe = (t) => { if (t && typeof t === "object") return t; try { return JSON.parse(t); } catch { return null; } };
   const post = (type, data) => window.postMessage({ [TAG]: true, dir: "out", type, data }, "*");
@@ -42,7 +42,7 @@
     if (old) {
       state.board.delete("id:" + id);
       const cur = state.board.get(username.toLowerCase());
-      if (cur) cur.total += old.total;
+      if (cur) { cur.total += old.total; for (const [e, n] of Object.entries(old.emojis || {})) cur.emojis[e] = (cur.emojis[e] || 0) + n; }
       else state.board.set(username.toLowerCase(), { ...old, username, displayName: old.displayName || displayName || null });
       changed = true;
     }
@@ -160,7 +160,7 @@
     ws.send = function (data) {
       const r = typeof data === "string" && roomFrom(data);
       if (r && r !== state.room) {
-        state.room = r; state.count = 0; state.feed = []; state.board = new Map(); state.listeners = null;
+        state.room = r; state.count = 0; state.feed = []; state.board = new Map(); state.emojiTotals = new Map(); state.listeners = null;
         post("join", { room: r, title: spaceTitle() });
         // hand over everything we learned before the chat connected
         const names = [...ids].map(([userId, v]) => ({ userId, username: v.username, displayName: v.displayName }));
@@ -184,7 +184,8 @@
         state.count++;
         state.feed.unshift(ev.r); if (state.feed.length > 150) state.feed.pop();
         const key = ev.r.username ? ev.r.username.toLowerCase() : ev.r.userId ? "id:" + ev.r.userId : "unknown";
-        const b = state.board.get(key) || { ...ev.r, total: 0 }; b.total++; state.board.set(key, b);
+        const b = state.board.get(key) || { ...ev.r, total: 0, emojis: {} }; b.total++; b.emojis[ev.r.emoji] = (b.emojis[ev.r.emoji] || 0) + 1; state.board.set(key, b);
+        state.emojiTotals.set(ev.r.emoji, (state.emojiTotals.get(ev.r.emoji) || 0) + 1);
       } else {
         post("occupancy", { room: state.room, ...ev.o });
         state.listeners = ev.o.listeners;
@@ -255,11 +256,15 @@
       s === "error" ? "⚠ sync hiccup — retrying" : "";
     syncEl.style.color = s === "ok" ? "#8b8b96" : "#ff4d6d";
 
+    const topE = [...state.emojiTotals].sort((a, b) => b[1] - a[1]).slice(0, 6);
+    if (topE.length) root.append(h("div", { style: { marginTop: "6px", display: "flex", flexWrap: "wrap", gap: "8px", fontSize: "13px" } },
+      topE.map(([e, n]) => h("span", null, e, h("span", { style: { color: "#8b8b96", fontSize: "11px", marginLeft: "2px" } }, n)))));
     if (state.min) return;
     const unnamed = state.feed.filter((r) => !r.username).length;
     root.append(h("div", { style: { marginTop: "8px", display: "flex", alignItems: "center" } },
       btn("Feed", () => { state.tab = "feed"; render(); }, state.tab === "feed"),
       btn("Top", () => { state.tab = "top"; render(); }, state.tab === "top"),
+      btn("Emojis", () => { state.tab = "emojis"; render(); }, state.tab === "emojis"),
       unnamed ? h("span", { style: { marginLeft: "auto" } }, btn(`${unnamed} unnamed · copy debug`, copyDebug)) : null), bodyEl);
     bodyEl.replaceChildren();
     const row = (kids) => h("div", { style: { padding: "3px 0", borderBottom: "1px solid #1b1b21", display: "flex", gap: "6px", alignItems: "center" } }, kids);
@@ -273,10 +278,27 @@
     if (state.tab === "feed") {
       if (!state.feed.length) bodyEl.append(h("div", { style: { color: "#8b8b96" } }, state.room ? "Waiting for reactions…" : "Join a Space to start."));
       state.feed.forEach((r) => bodyEl.append(row([h("span", { style: { fontSize: "15px" } }, r.emoji), who(r)])));
+    } else if (state.tab === "emojis") {
+      const all = [...state.emojiTotals].sort((a, b) => b[1] - a[1]);
+      if (!all.length) bodyEl.append(h("div", { style: { color: "#8b8b96" } }, "No reactions yet."));
+      const max = all.length ? all[0][1] : 1;
+      const people = (e) => [...state.board.values()].filter((u) => u.emojis && u.emojis[e]).length;
+      all.forEach(([e, n]) => bodyEl.append(row([
+        h("span", { style: { fontSize: "16px", width: "22px" } }, e),
+        h("div", { style: { flex: "1", height: "8px", background: "#1b1b21", borderRadius: "4px", overflow: "hidden" } },
+          h("div", { style: { width: `${Math.max(4, (n / max) * 100)}%`, height: "100%", background: "#c6ff3d", borderRadius: "4px" } })),
+        h("span", { style: { fontWeight: "700", minWidth: "28px", textAlign: "right" } }, n),
+        h("span", { style: { color: "#8b8b96", fontSize: "11px", minWidth: "54px", textAlign: "right" } }, `${people(e)} ppl`),
+      ])));
     } else {
       [...state.board.values()].sort((a, b) => b.total - a.total).slice(0, 50).forEach((u, i) =>
-        bodyEl.append(row([h("span", { style: { color: "#8b8b96", width: "22px" } }, `#${i + 1}`), who(u),
-          h("span", { style: { marginLeft: "auto", fontWeight: "700" } }, u.total)])));
+        bodyEl.append(h("div", { style: { padding: "4px 0", borderBottom: "1px solid #1b1b21" } },
+          h("div", { style: { display: "flex", gap: "6px", alignItems: "center" } },
+            h("span", { style: { color: "#8b8b96", width: "22px" } }, `#${i + 1}`), who(u),
+            h("span", { style: { marginLeft: "auto", fontWeight: "700" } }, u.total)),
+          h("div", { style: { paddingLeft: "28px", fontSize: "12px", display: "flex", flexWrap: "wrap", gap: "6px" } },
+            Object.entries(u.emojis || {}).sort((a, b) => b[1] - a[1]).map(([e, n]) =>
+              h("span", null, e, h("span", { style: { color: "#8b8b96", fontSize: "11px", marginLeft: "1px" } }, n)))))));
     }
   }
 
