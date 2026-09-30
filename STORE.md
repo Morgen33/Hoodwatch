@@ -22,11 +22,12 @@ Join your Space on x.com and Tapped In catches every emoji reaction by account a
 • "When it popped off": reactions and listener count over time
 • Wallet allowlists: engaged listeners sign in with X and submit a Solana or Ethereum wallet; export in one click
 • Recap card: a shareable image thanking your top reactors
+• Public results page: share a link to the final leaderboard when your Space ends
 
 How it works:
 1. Sign in with X at tappedin-spaces.vercel.app
 2. Generate your key under Extension and paste it into the Tapped In popup
-3. Open a Space and hit Start listening
+3. Open any Space on x.com. The Tapped In panel pops up and starts counting on its own
 
 Tapped In only reads reactions already visible to everyone in the Space. It never posts, reacts, or sends anything into a Space, and it only runs on x.com.
 
@@ -45,6 +46,6 @@ Records emoji reactions and listener counts in X Spaces the user is listening to
 - Collects: "Website content" (reactions shown in the Space), "Authentication information" (the Tapped In key, stored locally)
 - Not sold, not used for unrelated purposes, not used for creditworthiness
 
-## Assets you still need
-- At least 1 screenshot, 1280×800 or 640×400: take one of the dashboard and one of the panel in a live Space
-- Icon 128×128: `extension/icon128.png`
+## Assets
+- Screenshots (1280×800) and small promo tile (440×280): `store-assets/`
+- Icon 128×128: `extension/icon128.png` (already inside the zip)
