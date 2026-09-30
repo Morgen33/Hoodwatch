@@ -6,7 +6,10 @@ import { fmtDate, fmtNum } from "@/lib/format";
 import type { Giveaway, Summary } from "@/lib/types";
 import { Timeline } from "./Timeline";
 import { GiveawayPanel } from "./GiveawayPanel";
-import { AutoRefresh } from "./AutoRefresh";
+import { AutoRefresh } from "@/components/AutoRefresh";
+import { CopyButton } from "@/components/CopyButton";
+import { isLive } from "@/lib/live";
+import { headers } from "next/headers";
 
 export default async function SpacePage({ params }: PageProps<"/dashboard/spaces/[id]">) {
   const { id } = await params;
@@ -14,7 +17,7 @@ export default async function SpacePage({ params }: PageProps<"/dashboard/spaces
 
   const { data: space } = await supabase
     .from("spaces")
-    .select("id, space_id, title, started_at, ended_at, peak_listeners, total_reactions")
+    .select("id, space_id, title, started_at, ended_at, last_activity_at, peak_listeners, total_reactions, share_slug, share_public")
     .eq("id", id)
     .maybeSingle();
   if (!space) notFound();
@@ -24,7 +27,16 @@ export default async function SpacePage({ params }: PageProps<"/dashboard/spaces
     supabase.from("giveaways").select("*").eq("space_uuid", id).order("drawn_at", { ascending: false }),
   ]);
   const s = summary as Summary;
-  const live = !space.ended_at;
+  const live = isLive(space.ended_at, space.last_activity_at);
+  const h = await headers();
+  const shareUrl = `${h.get("x-forwarded-proto") ?? "https"}://${h.get("x-forwarded-host") ?? h.get("host")}/s/${space.share_slug}`;
+
+  async function toggleShare() {
+    "use server";
+    const { supabase } = await getUser();
+    await supabase.from("spaces").update({ share_public: !space!.share_public }).eq("id", id);
+    revalidatePath(`/dashboard/spaces/${id}`);
+  }
 
   async function rename(formData: FormData) {
     "use server";
@@ -60,6 +72,30 @@ export default async function SpacePage({ params }: PageProps<"/dashboard/spaces
           <a className="btn" href={`/api/recap/${id}`} target="_blank" rel="noreferrer">Recap card</a>
           <Link className="btn btn-primary" href={`/dashboard/campaigns?space=${id}`}>Make allowlist</Link>
         </div>
+      </div>
+
+      <div className="card space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="font-bold">Public leaderboard</div>
+          {space.share_public ? <span className="pill pill-live">on</span> : <span className="pill">off</span>}
+          <form action={toggleShare} className="ml-auto">
+            <button className="btn btn-ghost">{space.share_public ? "Make private" : "Make public"}</button>
+          </form>
+        </div>
+        {space.share_public ? (
+          <>
+            <div className="flex gap-2">
+              <input readOnly value={shareUrl} className="input font-mono text-sm" />
+              <CopyButton text={shareUrl} />
+              <a className="btn btn-primary" href={shareUrl} target="_blank" rel="noreferrer">Open</a>
+            </div>
+            <p className="text-xs muted">
+              Anyone with the link sees the leaderboard and emoji totals — live during the Space, final results after. Post it when you wrap up.
+            </p>
+          </>
+        ) : (
+          <p className="text-xs muted">Only you can see this Space&apos;s stats. Make it public to get a shareable link.</p>
+        )}
       </div>
 
       <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">

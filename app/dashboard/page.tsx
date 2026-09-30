@@ -1,13 +1,14 @@
 import Link from "next/link";
 import { getUser } from "@/lib/supabase/server";
 import { fmtDate, fmtNum } from "@/lib/format";
+import { isLive } from "@/lib/live";
 
 export default async function Dashboard() {
   const { supabase, user } = await getUser();
   const [{ data: spaces }, { data: profile }, { count: regularsCount }] = await Promise.all([
     supabase
       .from("spaces")
-      .select("id, space_id, title, started_at, ended_at, peak_listeners, total_reactions")
+      .select("id, space_id, title, started_at, ended_at, last_activity_at, peak_listeners, total_reactions")
       .order("started_at", { ascending: false })
       .limit(50),
     supabase.from("profiles").select("ingest_token_hash").eq("id", user!.id).single(),
@@ -58,7 +59,7 @@ export default async function Dashboard() {
                   <td className="muted">{fmtDate(s.started_at)}</td>
                   <td>{fmtNum(s.total_reactions)}</td>
                   <td>{fmtNum(s.peak_listeners)}</td>
-                  <td>{s.ended_at ? <span className="pill">ended</span> : <span className="pill pill-live">● live</span>}</td>
+                  <td>{isLive(s.ended_at, s.last_activity_at) ? <span className="pill pill-live">● live</span> : <span className="pill">ended</span>}</td>
                 </tr>
               ))}
             </tbody>
