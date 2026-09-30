@@ -25,7 +25,7 @@ export default async function Home({ searchParams }: PageProps<"/">) {
           See who&apos;s really <span style={{ color: "var(--accent)" }}>in the room.</span>
         </h1>
         <p className="mt-5 max-w-2xl text-lg muted">
-          Hoodwatch tracks every emoji reaction in your X Spaces by account — then turns that engagement into
+          Tapped In tracks every emoji reaction in your X Spaces by account — then turns that engagement into
           giveaways, allowlists and a community you actually know.
         </p>
         <div className="mt-8 flex flex-wrap items-center gap-3">
@@ -50,7 +50,7 @@ export default async function Home({ searchParams }: PageProps<"/">) {
         <ol className="mt-4 grid gap-4 sm:grid-cols-3">
           {[
             ["1", "Sign in with X", "Your dashboard is tied to your X account."],
-            ["2", "Install the extension", "Paste your Hoodwatch key into it once."],
+            ["2", "Install the extension", "Paste your Tapped In key into it once."],
             ["3", "Open a Space", "Reactions sync to your dashboard live. That's it."],
           ].map(([n, t, b]) => (
             <li key={n} className="card">
@@ -61,7 +61,7 @@ export default async function Home({ searchParams }: PageProps<"/">) {
           ))}
         </ol>
         <p className="mt-6 text-xs muted max-w-2xl">
-          Reactions in a Space are visible to everyone in the room. Hoodwatch records them for the host. Be upfront with
+          Reactions in a Space are visible to everyone in the room. Tapped In records them for the host. Be upfront with
           your listeners — e.g. “we track reactions for rewards” in your Space title.{" "}
           <a className="link" href="/privacy">Privacy policy</a>
         </p>

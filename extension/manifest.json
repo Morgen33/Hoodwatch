@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Hoodwatch",
-  "version": "1.1.0",
-  "description": "See who's reacting in your X Spaces. Syncs reactions to your Hoodwatch dashboard.",
+  "name": "Tapped In",
+  "version": "1.2.0",
+  "description": "See who's reacting in your X Spaces. Syncs reactions to your Tapped In dashboard.",
   "permissions": ["storage"],
   "host_permissions": ["https://gyspxodpxmpzxwskrbia.supabase.co/*"],
   "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "Hoodwatch", "default_icon": { "128": "icon128.png" } },
+  "action": { "default_popup": "popup.html", "default_title": "Tapped In", "default_icon": { "128": "icon128.png" } },
   "icons": { "128": "icon128.png" },
   "content_scripts": [
     {

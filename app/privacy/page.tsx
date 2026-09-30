@@ -1,4 +1,4 @@
-export const metadata = { title: "Privacy — Hoodwatch" };
+export const metadata = { title: "Privacy — Tapped In" };
 
 export default function Privacy() {
   return (
@@ -6,9 +6,9 @@ export default function Privacy() {
       <h1 className="text-3xl font-black tracking-tight">Privacy Policy</h1>
       <p className="muted">Last updated September 28, 2026</p>
 
-      <h2 className="text-lg font-bold pt-2">What Hoodwatch is</h2>
+      <h2 className="text-lg font-bold pt-2">What Tapped In is</h2>
       <p>
-        Hoodwatch helps X (Twitter) Space hosts see engagement in their Spaces: which accounts reacted with which emoji,
+        Tapped In helps X (Twitter) Space hosts see engagement in their Spaces: which accounts reacted with which emoji,
         listener counts over time, giveaways, and optional wallet allowlists.
       </p>
 
@@ -20,7 +20,7 @@ export default function Privacy() {
         </li>
         <li>This is information already shown to everyone in the Space. The extension reads it; it never posts, reacts, or sends anything into the Space.</li>
         <li>It does not read your DMs, timeline, passwords, cookies, browsing history, or any site other than x.com / twitter.com.</li>
-        <li>Your Hoodwatch key is stored locally in the extension and used only to send this data to your own Hoodwatch account.</li>
+        <li>Your Tapped In key is stored locally in the extension and used only to send this data to your own Tapped In account.</li>
       </ul>
 
       <h2 className="text-lg font-bold pt-2">What the website collects</h2>

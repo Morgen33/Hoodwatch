@@ -1,4 +1,4 @@
-// Buffers events per Space and flushes them to Hoodwatch every few seconds.
+// Buffers events per Space and flushes them to Tapped In every few seconds.
 const SUPABASE_URL = "https://gyspxodpxmpzxwskrbia.supabase.co";
 const SUPABASE_KEY = "sb_publishable_KNOxGoWipYH1TY31lGw9gA_76OQ3t5S"; // public key; the per-host token is what authorizes writes
 const FLUSH_MS = 4000;

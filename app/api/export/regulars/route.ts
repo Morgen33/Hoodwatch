@@ -18,6 +18,6 @@ export async function GET() {
     if (data.length < 1000) break;
   }
   return new Response(toCSV(rows), {
-    headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="hoodwatch-regulars.csv"' },
+    headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="tappedin-regulars.csv"' },
   });
 }

@@ -20,7 +20,7 @@ export default async function DashboardLayout({ children }: LayoutProps<"/dashbo
       <header className="border-b" style={{ borderColor: "var(--line)" }}>
         <div className="mx-auto max-w-6xl px-5 h-14 flex items-center gap-6">
           <Link href="/dashboard" className="font-black tracking-tight text-lg">
-            hood<span style={{ color: "var(--accent)" }}>watch</span>
+            tapped<span style={{ color: "var(--accent)" }}>in</span>
           </Link>
           <nav className="flex gap-1 overflow-x-auto">
             {nav.map(([href, label]) => (

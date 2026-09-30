@@ -37,7 +37,7 @@ export default async function Dashboard() {
           <h2 className="font-bold text-lg">No Spaces yet — let&apos;s get you set up</h2>
           <ol className="mt-3 space-y-2 text-sm">
             <li>{hasKey ? "✅" : "1."} <Link className="link" href="/dashboard/extension">Get your extension key</Link></li>
-            <li>2. Install the Hoodwatch extension and paste the key in</li>
+            <li>2. Install the Tapped In extension and paste the key in</li>
             <li>3. Open any Space on x.com and hit Start listening — it shows up here live</li>
           </ol>
         </div>

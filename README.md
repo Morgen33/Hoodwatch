@@ -1,6 +1,6 @@
-# Hoodwatch
+# Tapped In
 
-See who's really in the room. Hoodwatch tracks every emoji reaction in your X Spaces by account, then turns it into live leaderboards, provably fair giveaways, a regulars list across Spaces, and wallet allowlists.
+See who's really in the room. Tapped In tracks every emoji reaction in your X Spaces by account, then turns it into live leaderboards, provably fair giveaways, a regulars list across Spaces, and wallet allowlists.
 
 Born in a Hoodstreet Space.
 
@@ -38,7 +38,7 @@ After deploying, add your site URL in Supabase → Authentication → URL Config
 ## Extension
 1. Dashboard → Extension → generate your key
 2. `chrome://extensions` → Developer mode → Load unpacked → pick `extension/`
-3. Click the Hoodwatch icon, paste the key, save
+3. Click the Tapped In icon, paste the key, save
 4. Open a Space on x.com and hit Start listening
 
 ## Verifying a giveaway

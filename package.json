@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "zip-extension": "rm -f public/hoodwatch-extension.zip hoodwatch-extension-store.zip && zip -qr public/hoodwatch-extension.zip extension && (cd extension && zip -qr ../hoodwatch-extension-store.zip .)"
+    "zip-extension": "rm -f public/tappedin-extension.zip tappedin-extension-store.zip && zip -qr public/tappedin-extension.zip extension && (cd extension && zip -qr ../tappedin-extension-store.zip .)"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

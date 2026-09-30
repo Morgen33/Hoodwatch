@@ -231,7 +231,7 @@
   }
 
   function copyDebug() {
-    const text = JSON.stringify({ v: "hoodwatch-1.1", knownIds: ids.size, samples: unresolvedSamples }, null, 1);
+    const text = JSON.stringify({ v: "tappedin-1.2", knownIds: ids.size, samples: unresolvedSamples }, null, 1);
     navigator.clipboard.writeText(text).then(() => alert("Debug info copied — paste it to whoever's helping you fix this."), () => prompt("Copy this:", text));
   }
 
@@ -239,7 +239,7 @@
     if (!root) return;
     root.replaceChildren(
       h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
-        h("strong", { style: { fontSize: "13px" } }, "hood", h("span", { style: { color: "#c6ff3d" } }, "watch")),
+        h("strong", { style: { fontSize: "13px" } }, "tapped", h("span", { style: { color: "#c6ff3d" } }, "in")),
         statusEl,
         h("span", { style: { marginLeft: "auto" } }, btn(state.min ? "+" : "–", () => { state.min = !state.min; render(); }))),
       syncEl,
@@ -250,7 +250,7 @@
     const s = state.sync;
     syncEl.textContent =
       s === "ok" ? "✓ syncing to your dashboard" :
-      s === "nokey" ? "⚠ add your Hoodwatch key — click the extension icon" :
+      s === "nokey" ? "⚠ add your Tapped In key — click the extension icon" :
       s === "badkey" ? "⚠ key rejected — generate a new one in your dashboard" :
       s === "error" ? "⚠ sync hiccup — retrying" : "";
     syncEl.style.color = s === "ok" ? "#8b8b96" : "#ff4d6d";

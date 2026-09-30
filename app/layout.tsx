@@ -7,7 +7,7 @@ const geistSans = GeistSans;
 const geistMono = GeistMono;
 
 export const metadata: Metadata = {
-  title: "Hoodwatch — see who's in your Space",
+  title: "Tapped In — see who's in your Space",
   description: "Live reaction leaderboards, provably fair giveaways, regulars tracking and wallet allowlists for X Spaces.",
 };
 

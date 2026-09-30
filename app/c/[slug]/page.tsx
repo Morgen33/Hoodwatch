@@ -13,7 +13,7 @@ export async function generateMetadata({ params }: PageProps<"/c/[slug]">) {
   const { supabase } = await getUser();
   const { data } = await supabase.rpc("claim_status", { p_slug: slug });
   const s = data as Status;
-  return { title: s?.found ? `${s.title} — claim on Hoodwatch` : "Hoodwatch" };
+  return { title: s?.found ? `${s.title} — claim on Tapped In` : "Tapped In" };
 }
 
 export default async function ClaimPage({ params }: PageProps<"/c/[slug]">) {
@@ -25,7 +25,7 @@ export default async function ClaimPage({ params }: PageProps<"/c/[slug]">) {
   return (
     <main className="flex-1 flex items-center justify-center px-5 py-16">
       <div className="card w-full max-w-md space-y-5">
-        <div className="text-sm font-black">hood<span style={{ color: "var(--accent)" }}>watch</span></div>
+        <div className="text-sm font-black">tapped<span style={{ color: "var(--accent)" }}>in</span></div>
 
         {!s?.found ? (
           <p className="muted">This claim page doesn&apos;t exist.</p>

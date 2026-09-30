@@ -27,7 +27,7 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/export/space/[i
   return new Response(toCSV(rows), {
     headers: {
       "content-type": "text/csv; charset=utf-8",
-      "content-disposition": `attachment; filename="hoodwatch-${space.space_id}.csv"`,
+      "content-disposition": `attachment; filename="tappedin-${space.space_id}.csv"`,
     },
   });
 }

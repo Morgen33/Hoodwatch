@@ -23,7 +23,7 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/recap/[id]">) {
       <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", background: "#0b0b0d", color: "#ededf0", padding: 56, fontFamily: "sans-serif" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ display: "flex", fontSize: 30, fontWeight: 900 }}>
-            hood<span style={{ color: "#c6ff3d" }}>watch</span>
+            tapped<span style={{ color: "#c6ff3d" }}>in</span>
           </div>
           <div style={{ display: "flex", fontSize: 22, color: "#8b8b96" }}>{date}</div>
         </div>
