@@ -338,13 +338,23 @@
     navigator.clipboard.writeText(text).then(() => alert("Debug info copied — paste it to whoever's helping you fix this."), () => prompt("Copy this:", text));
   }
 
+  // Wipes the panel only. Anything already synced stays on the dashboard.
+  function clearPanel() {
+    if (state.count && !confirm("Clear the panel and start counting from zero?\n\nYour dashboard keeps everything already synced.")) return;
+    state.count = 0; state.feed = []; state.board = new Map(); state.emojiTotals = new Map();
+    unresolvedSamples.length = 0;
+    render();
+  }
+
   function render() {
     if (!root) return;
     root.replaceChildren(...[
       h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
         h("strong", { style: { fontSize: "13px" } }, "tapped", h("span", { style: { color: "#c6ff3d" } }, "in")),
         statusEl,
-        h("span", { style: { marginLeft: "auto" } }, btn(state.min ? "+" : "–", () => { state.min = !state.min; render(); }))),
+        h("span", { style: { marginLeft: "auto", display: "flex" } },
+          btn("Clear", clearPanel),
+          btn(state.min ? "+" : "–", () => { state.min = !state.min; render(); }))),
       state.title ? h("div", { style: { marginTop: "4px", fontSize: "12px", fontWeight: "700", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
         state.title, state.host ? h("span", { style: { color: "#8b8b96", fontWeight: "400" } }, ` · @${state.host}`) : null) : null,
       syncEl,
