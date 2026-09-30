@@ -222,7 +222,9 @@
   // X doesn't echo your own reactions back over the socket, so catch them on the way out.
   const selfSent = [];
   function self() {
-    const m = document.cookie.match(/(?:^|;\s*)twid=("?)u(?:%3D|=)(\d+)\1/);
+    let cookie = "";
+    try { cookie = document.cookie || ""; } catch { /* no cookie access: treat as unknown */ }
+    const m = cookie.match(/(?:^|;\s*)twid=("?)u(?:%3D|=)(\d+)\1/);
     const id = m ? m[2] : null;
     const known = id ? ids.get(id) : null;
     return { id, username: known ? known.username : null, displayName: known ? known.displayName : null };
@@ -309,7 +311,7 @@
     const unnamed = state.feed.filter((r) => !r.username).length;
     root.append(h("div", { style: { marginTop: "8px", display: "flex", alignItems: "center" } },
       btn("Feed", () => { state.tab = "feed"; render(); }, state.tab === "feed"),
-      btn("Top", () => { state.tab = "top"; render(); }, state.tab === "top"),
+      btn("Leaderboard", () => { state.tab = "top"; render(); }, state.tab === "top"),
       btn("Emojis", () => { state.tab = "emojis"; render(); }, state.tab === "emojis"),
       unnamed ? h("span", { style: { marginLeft: "auto" } }, btn(`${unnamed} unnamed · copy debug`, copyDebug)) : null), bodyEl);
     bodyEl.replaceChildren();
@@ -337,14 +339,15 @@
         h("span", { style: { color: "#8b8b96", fontSize: "11px", minWidth: "54px", textAlign: "right" } }, `${people(e)} ppl`),
       ])));
     } else {
-      [...state.board.values()].sort((a, b) => b.total - a.total).slice(0, 50).forEach((u, i) =>
-        bodyEl.append(h("div", { style: { padding: "4px 0", borderBottom: "1px solid #1b1b21" } },
-          h("div", { style: { display: "flex", gap: "6px", alignItems: "center" } },
-            h("span", { style: { color: "#8b8b96", width: "22px" } }, `#${i + 1}`), who(u),
-            h("span", { style: { marginLeft: "auto", fontWeight: "700" } }, u.total)),
-          h("div", { style: { paddingLeft: "28px", fontSize: "12px", display: "flex", flexWrap: "wrap", gap: "6px" } },
+      // one line per person: #rank  name ........ total  🔥12 💯3 😂1  (wraps if long)
+      [...state.board.values()].sort((a, b) => b.total - a.total).slice(0, 100).forEach((u, i) =>
+        bodyEl.append(h("div", { style: { padding: "5px 0", borderBottom: "1px solid #1b1b21", display: "flex", flexWrap: "wrap", alignItems: "baseline", columnGap: "6px", rowGap: "2px" } },
+          h("span", { style: { color: "#8b8b96", minWidth: "24px" } }, `#${i + 1}`),
+          h("span", { style: { flex: "1 1 auto", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "150px" } }, who(u)),
+          h("span", { style: { marginLeft: "auto", display: "flex", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "baseline", gap: "6px" } },
+            h("span", { style: { fontWeight: "800" } }, u.total),
             Object.entries(u.emojis || {}).sort((a, b) => b[1] - a[1]).map(([e, n]) =>
-              h("span", null, e, h("span", { style: { color: "#8b8b96", fontSize: "11px", marginLeft: "1px" } }, n)))))));
+              h("span", { style: { whiteSpace: "nowrap" } }, e, h("span", { style: { fontSize: "11px", color: "#bdbdc6", marginLeft: "1px" } }, n)))))));
     }
   }
 

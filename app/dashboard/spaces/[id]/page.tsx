@@ -97,10 +97,12 @@ export default async function SpacePage({ params }: PageProps<"/dashboard/spaces
                       </a>
                     </td>
                     <td className="font-bold">{fmtNum(u.total)}</td>
-                    <td className="whitespace-nowrap">
-                      {Object.entries(u.emojis).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([e, n]) => (
-                        <span key={e} className="mr-2">{e}<span className="text-xs muted">{n}</span></span>
-                      ))}
+                    <td>
+                      <div className="flex flex-wrap gap-x-2.5 gap-y-1">
+                        {Object.entries(u.emojis).sort((a, b) => b[1] - a[1]).map(([e, n]) => (
+                          <span key={e} className="whitespace-nowrap">{e}<span className="text-xs muted ml-0.5">{fmtNum(n)}</span></span>
+                        ))}
+                      </div>
                     </td>
                   </tr>
                 ))}
