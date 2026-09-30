@@ -10,6 +10,7 @@ import { AutoRefresh } from "@/components/AutoRefresh";
 import { CopyButton } from "@/components/CopyButton";
 import { isLive } from "@/lib/live";
 import { headers } from "next/headers";
+import { InsightGrid, OnStage, HostLine, type Analytics } from "@/components/SpaceInsights";
 
 export default async function SpacePage({ params }: PageProps<"/dashboard/spaces/[id]">) {
   const { id } = await params;
@@ -22,10 +23,12 @@ export default async function SpacePage({ params }: PageProps<"/dashboard/spaces
     .maybeSingle();
   if (!space) notFound();
 
-  const [{ data: summary }, { data: giveaways }] = await Promise.all([
+  const [{ data: summary }, { data: giveaways }, { data: analytics }] = await Promise.all([
     supabase.rpc("space_summary", { p_space: id }),
     supabase.from("giveaways").select("*").eq("space_uuid", id).order("drawn_at", { ascending: false }),
+    supabase.rpc("space_analytics", { p_space: id }),
   ]);
+  const a = analytics as Analytics | null;
   const s = summary as Summary;
   const live = isLive(space.ended_at, space.last_activity_at);
   const h = await headers();
@@ -66,6 +69,7 @@ export default async function SpacePage({ params }: PageProps<"/dashboard/spaces
             <a className="hover:underline" href={`https://x.com/i/spaces/${space.space_id}`} target="_blank" rel="noreferrer">open on X</a>
             {live ? <span className="pill pill-live">● live</span> : <span className="pill">ended</span>}
           </div>
+          {a?.host.handle && <div className="mt-1 text-sm"><HostLine a={a} /></div>}
         </div>
         <div className="flex flex-wrap gap-2">
           <a className="btn" href={`/api/export/space/${id}`}>Export CSV</a>
@@ -112,6 +116,9 @@ export default async function SpacePage({ params }: PageProps<"/dashboard/spaces
           </div>
         </div>
       </div>
+
+      {a && <InsightGrid a={a} total={s.total} unique={s.unique} />}
+      {a && <OnStage a={a} />}
 
       <Timeline timeline={s.timeline} occupancy={s.occupancy} bucketSecs={s.bucket_secs} />
 

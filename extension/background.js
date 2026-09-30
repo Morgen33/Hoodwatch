@@ -26,6 +26,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   }
   if (msg.type === "leave") b.ended = true;
   if (msg.type === "name") b.names.set(d.userId, d);
+  if (msg.type === "meta" && d.meta) { b.meta = d.meta; b.metaDirty = true; if (d.meta.title) b.title = d.meta.title; }
   if (msg.type === "names" && Array.isArray(d.names)) for (const n of d.names.slice(0, 2000)) b.names.set(n.userId, n);
   schedule();
 });
@@ -42,7 +43,7 @@ async function flush() {
   timer = null;
   const { hwKey } = await chrome.storage.local.get("hwKey");
   for (const [room, b] of buffers) {
-    const hasWork = b.reactions.length || b.occupancy.length || b.names.size || b.ended || b.dirty;
+    const hasWork = b.reactions.length || b.occupancy.length || b.names.size || b.ended || b.dirty || b.metaDirty;
     if (!hasWork) continue;
     if (!hwKey) { tell(b.tabs, "nokey"); continue; }
 
@@ -57,11 +58,12 @@ async function flush() {
         headers: { "content-type": "application/json", apikey: SUPABASE_KEY, authorization: `Bearer ${SUPABASE_KEY}` },
         body: JSON.stringify({
           p_token: hwKey, p_space_id: room, p_title: b.title,
-          p_reactions: reactions, p_occupancy: occupancy, p_ended: ended, p_names: names,
+          p_reactions: reactions, p_occupancy: occupancy, p_ended: ended, p_names: names, p_meta: b.metaDirty ? b.meta : null,
         }),
       });
       if (res.ok) {
         b.dirty = false;
+        b.metaDirty = false;
         if (occupancy.length) b.lastOcc = occupancy[occupancy.length - 1];
         if (ended) { tell(b.tabs, "ok"); buffers.delete(room); continue; }
         tell(b.tabs, "ok");

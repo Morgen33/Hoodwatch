@@ -4,6 +4,9 @@ import { getPublicSpace } from "@/lib/public-space";
 import { fmtNum } from "@/lib/format";
 import { AutoRefresh } from "@/components/AutoRefresh";
 import { PublicLeaderboard } from "./PublicLeaderboard";
+import { InsightGrid, OnStage, HostLine, type Analytics } from "@/components/SpaceInsights";
+import { createClient } from "@supabase/supabase-js";
+import { SUPABASE_KEY, SUPABASE_URL } from "@/lib/supabase/env";
 
 export async function generateMetadata({ params }: PageProps<"/s/[slug]">) {
   const { slug } = await params;
@@ -22,6 +25,10 @@ export default async function PublicSpacePage({ params }: PageProps<"/s/[slug]">
   const { slug } = await params;
   const s = await getPublicSpace(slug);
   if (!s) notFound();
+  const sb = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } });
+  const { data: sid } = await sb.rpc("public_space_id", { p_slug: slug });
+  const { data: analytics } = sid ? await sb.rpc("space_analytics", { p_space: sid }) : { data: null };
+  const a = analytics as Analytics | null;
 
   const date = new Date(s.started_at).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
   const maxE = s.emojis[0]?.n ?? 1;
@@ -44,8 +51,12 @@ export default async function PublicSpacePage({ params }: PageProps<"/s/[slug]">
               // eslint-disable-next-line @next/next/no-img-element
               <img src={s.host.avatar} alt="" width={24} height={24} className="rounded-full" />
             )}
-            <span className="muted">Hosted by</span>
-            <a className="font-semibold hover:underline" href={`https://x.com/${s.host.handle}`} target="_blank" rel="noreferrer">@{s.host.handle}</a>
+            {a?.host.handle ? <HostLine a={a} /> : (
+              <>
+                <span className="muted">Hosted by</span>
+                <a className="font-semibold hover:underline" href={`https://x.com/${s.host.handle}`} target="_blank" rel="noreferrer">@{s.host.handle}</a>
+              </>
+            )}
             <span className="muted">·</span>
             <a className="muted hover:underline" href={`https://x.com/i/spaces/${s.space_id}`} target="_blank" rel="noreferrer">{s.live ? "join on X" : "view on X"}</a>
           </div>
@@ -56,6 +67,9 @@ export default async function PublicSpacePage({ params }: PageProps<"/s/[slug]">
           <div className="card"><div className="label">Reactors</div><div className="stat">{fmtNum(s.unique)}</div></div>
           <div className="card"><div className="label">Peak listeners</div><div className="stat">{fmtNum(s.peak_listeners)}</div></div>
         </div>
+
+        {a && <InsightGrid a={a} total={s.total} unique={s.unique} />}
+        {a && <OnStage a={a} />}
 
         {s.emojis.length > 0 && (
           <section className="card space-y-2">

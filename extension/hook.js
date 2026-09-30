@@ -55,6 +55,7 @@
     (function walk(o, depth) {
       if (!o || typeof o !== "object" || depth > 14 || --budget < 0) return;
       if (Array.isArray(o)) { for (const x of o) walk(x, depth + 1); return; }
+      if (o.metadata && typeof o.metadata === "object" && o.metadata.rest_id && typeof o.metadata.title === "string") spaceMeta(o);
       if (o.twitter_screen_name) {
         const rest = o.user_results && o.user_results.rest_id;
         remember(rest, o.twitter_screen_name, o.display_name);
@@ -69,6 +70,57 @@
       if (o.twitter_id && o.username) remember(o.twitter_id, o.username, o.display_name || o.displayName);
       for (const k in o) walk(o[k], depth + 1);
     })(json, 0);
+  }
+
+  // X's Space info (AudioSpaceById): the real title, who's hosting, and whether it has ended.
+  const metas = new Map();
+  function spaceMeta(space) {
+    const m = space.metadata;
+    const person = (x) => {
+      if (!x) return null;
+      const r = x.user_results && x.user_results.result;
+      const handle = x.twitter_screen_name || (r && ((r.core && r.core.screen_name) || (r.legacy && r.legacy.screen_name))) || null;
+      if (!handle) return null;
+      return {
+        handle,
+        name: x.display_name || (r && ((r.core && r.core.name) || (r.legacy && r.legacy.name))) || null,
+        avatar: x.avatar_url || (r && ((r.avatar && r.avatar.image_url) || (r.legacy && r.legacy.profile_image_url_https))) || null,
+      };
+    };
+    const c = m.creator_results && m.creator_results.result;
+    const creator = c ? person({ user_results: { result: c } }) : null;
+    const parts = space.participants || {};
+    const admins = (parts.admins || []).map(person).filter(Boolean);
+    const speakers = (parts.speakers || []).map(person).filter(Boolean);
+    const host = creator || admins[0] || null;
+    const cohosts = admins.filter((a) => !host || a.handle.toLowerCase() !== host.handle.toLowerCase());
+    const num = (v) => (typeof v === "number" ? v : v != null && /^\d+$/.test(String(v)) ? Number(v) : null);
+    const meta = {
+      title: String(m.title || "").slice(0, 200) || null,
+      host_handle: host && host.handle, host_name: host && host.name, host_avatar: host && host.avatar,
+      state: m.state || null,
+      cohosts: cohosts.slice(0, 20),
+      speakers: speakers.slice(0, 40),
+      total_live_listeners: num(m.total_live_listeners),
+      total_replay_watched: num(m.total_replay_watched),
+      replay_available: m.is_space_available_for_replay ?? null,
+      x_started_at: num(m.started_at),
+      x_ended_at: num(m.ended_at),
+      participants_total: num(parts.total),
+    };
+    const key = String(m.rest_id);
+    const prev = metas.get(key);
+    // keep the richest speaker/co-host lists we've seen (people drop off stage over time)
+    if (prev) {
+      const merge = (a, b) => { const seen = new Map(); for (const x of [...(a || []), ...(b || [])]) seen.set(x.handle.toLowerCase(), x); return [...seen.values()].slice(0, 60); };
+      meta.cohosts = merge(prev.cohosts, meta.cohosts).filter((x) => !meta.host_handle || x.handle.toLowerCase() !== meta.host_handle.toLowerCase());
+      meta.speakers = merge(prev.speakers, meta.speakers);
+      for (const k of Object.keys(meta)) if (meta[k] == null && prev[k] != null) meta[k] = prev[k];
+    }
+    if (prev && JSON.stringify(prev) === JSON.stringify(meta)) return;
+    metas.set(key, meta);
+    post("meta", { room: key, meta });
+    if (key === state.room) { state.title = meta.title; state.host = meta.host_handle; render(); }
   }
 
   const SPACE_API = /AudioSpace|audiospace|live_video_stream|\/spaces?\b|chatnow|Participants/i;
@@ -162,6 +214,8 @@
       if (r && r !== state.room) {
         state.room = r; state.count = 0; state.feed = []; state.board = new Map(); state.emojiTotals = new Map(); state.listeners = null;
         post("join", { room: r, title: spaceTitle() });
+        const known = metas.get(r);
+        if (known) { post("meta", { room: r, meta: known }); state.title = known.title; state.host = known.host_handle; }
         // hand over everything we learned before the chat connected
         const names = [...ids].map(([userId, v]) => ({ userId, username: v.username, displayName: v.displayName }));
         if (names.length) post("names", { room: r, names: names.slice(-2000) });
@@ -286,13 +340,15 @@
 
   function render() {
     if (!root) return;
-    root.replaceChildren(
+    root.replaceChildren(...[
       h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
         h("strong", { style: { fontSize: "13px" } }, "tapped", h("span", { style: { color: "#c6ff3d" } }, "in")),
         statusEl,
         h("span", { style: { marginLeft: "auto" } }, btn(state.min ? "+" : "–", () => { state.min = !state.min; render(); }))),
+      state.title ? h("div", { style: { marginTop: "4px", fontSize: "12px", fontWeight: "700", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } },
+        state.title, state.host ? h("span", { style: { color: "#8b8b96", fontWeight: "400" } }, ` · @${state.host}`) : null) : null,
       syncEl,
-    );
+    ].filter(Boolean));
     statusEl.textContent = `${state.connected ? "● live" : "○ idle"} · ${state.count} reactions${state.listeners != null ? ` · ${state.listeners} listening` : ""}`;
     statusEl.style.color = state.connected ? "#c6ff3d" : "#8b8b96";
 
