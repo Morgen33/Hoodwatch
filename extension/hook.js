@@ -167,6 +167,15 @@
         if (names.length) post("names", { room: r, names: names.slice(-2000) });
         render();
       }
+      try {
+        const emoji = typeof data === "string" && state.room && outgoingReaction(data);
+        if (emoji) {
+          const me = self();
+          selfSent.push({ emoji, ts: Date.now() }); if (selfSent.length > 50) selfSent.shift();
+          addReaction({ ts: Date.now(), emoji, username: me.username, displayName: me.displayName, userId: me.id });
+          render();
+        }
+      } catch { /* never break sending */ }
       return origSend.apply(this, arguments);
     };
     ws.addEventListener("open", () => { state.connected = true; ui(); render(); });
@@ -180,18 +189,55 @@
       const ev = parse(e.data);
       if (!ev) return;
       if (ev.kind === "reaction") {
-        post("reaction", { room: state.room, ...ev.r });
-        state.count++;
-        state.feed.unshift(ev.r); if (state.feed.length > 150) state.feed.pop();
-        const key = ev.r.username ? ev.r.username.toLowerCase() : ev.r.userId ? "id:" + ev.r.userId : "unknown";
-        const b = state.board.get(key) || { ...ev.r, total: 0, emojis: {} }; b.total++; b.emojis[ev.r.emoji] = (b.emojis[ev.r.emoji] || 0) + 1; state.board.set(key, b);
-        state.emojiTotals.set(ev.r.emoji, (state.emojiTotals.get(ev.r.emoji) || 0) + 1);
+        // if X ever echoes our own reaction back, don't count it twice
+        const me = self();
+        if (me.id && (ev.r.userId === me.id || (me.username && ev.r.username && ev.r.username.toLowerCase() === me.username.toLowerCase()))) {
+          const i = selfSent.findIndex((x) => x.emoji === ev.r.emoji && Date.now() - x.ts < 8000);
+          if (i >= 0) { selfSent.splice(i, 1); return; }
+        }
+        addReaction(ev.r);
       } else {
         post("occupancy", { room: state.room, ...ev.o });
         state.listeners = ev.o.listeners;
       }
       render();
     });
+  }
+
+  function addReaction(r) {
+    {
+      {
+        post("reaction", { room: state.room, ...r });
+        const ev = { r };
+        state.count++;
+        state.feed.unshift(ev.r); if (state.feed.length > 150) state.feed.pop();
+        const key = ev.r.username ? ev.r.username.toLowerCase() : ev.r.userId ? "id:" + ev.r.userId : "unknown";
+        const b = state.board.get(key) || { ...ev.r, total: 0, emojis: {} }; b.total++; b.emojis[ev.r.emoji] = (b.emojis[ev.r.emoji] || 0) + 1; state.board.set(key, b);
+        state.emojiTotals.set(ev.r.emoji, (state.emojiTotals.get(ev.r.emoji) || 0) + 1);
+      }
+    }
+  }
+
+  // ---------- the host's own reactions ----------
+  // X doesn't echo your own reactions back over the socket, so catch them on the way out.
+  const selfSent = [];
+  function self() {
+    const m = document.cookie.match(/(?:^|;\s*)twid=("?)u(?:%3D|=)(\d+)\1/);
+    const id = m ? m[2] : null;
+    const known = id ? ids.get(id) : null;
+    return { id, username: known ? known.username : null, displayName: known ? known.displayName : null };
+  }
+  function outgoingReaction(data) {
+    const m = safe(data);
+    if (!m) return null;
+    for (const cand of [m.payload, m.body]) {
+      const p = safe(cand);
+      if (!p) continue;
+      const b = safe(p.body);
+      if (b && b.type === 2 && b.body) return String(b.body).slice(0, 32);
+      if (p.type === 2 && p.body && typeof p.body === "string" && p.body.length <= 32 && !safe(p.body)) return p.body;
+    }
+    return null;
   }
 
   window.addEventListener("message", (e) => {
