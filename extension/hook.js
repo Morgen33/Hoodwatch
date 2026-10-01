@@ -331,10 +331,49 @@
     } });
     render();
     document.body.appendChild(root);
+    makeDraggable();
+  }
+
+  // ---------- drag the panel by its header; remembers the spot ----------
+  const POS_KEY = "tappedin-panel-pos";
+  let pos = null; // {x, y} = top-left in px, or null for the default corner
+  try { pos = JSON.parse(localStorage.getItem(POS_KEY) || "null"); } catch { pos = null; }
+  function savePos() { try { pos ? localStorage.setItem(POS_KEY, JSON.stringify(pos)) : localStorage.removeItem(POS_KEY); } catch { /* storage blocked: just don't remember */ } }
+  function applyPos() {
+    if (!root) return;
+    if (!pos) { Object.assign(root.style, { left: "12px", bottom: "12px", top: "auto", right: "auto" }); return; }
+    const w = root.offsetWidth || 310, hgt = root.offsetHeight || 60;
+    pos.x = Math.min(Math.max(0, pos.x), Math.max(0, window.innerWidth - w));
+    pos.y = Math.min(Math.max(0, pos.y), Math.max(0, window.innerHeight - Math.min(hgt, 80)));
+    Object.assign(root.style, { left: pos.x + "px", top: pos.y + "px", bottom: "auto", right: "auto" });
+  }
+  function makeDraggable() {
+    applyPos();
+    let drag = null, lastDown = 0;
+    root.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0 || !e.target.closest("[data-tidrag]") || e.target.closest("button,a,input")) return;
+      const now = Date.now();
+      if (now - lastDown < 350) { lastDown = 0; pos = null; savePos(); applyPos(); e.preventDefault(); return; } // double-click: back to the corner
+      lastDown = now;
+      const r = root.getBoundingClientRect();
+      drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, id: e.pointerId };
+      root.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    root.addEventListener("pointermove", (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      lastDown = 0; // it's a drag, not half of a double-click
+      pos = { x: e.clientX - drag.dx, y: e.clientY - drag.dy };
+      applyPos();
+    });
+    const end = (e) => { if (drag && e.pointerId === drag.id) { drag = null; savePos(); } };
+    root.addEventListener("pointerup", end);
+    root.addEventListener("pointercancel", end);
+    window.addEventListener("resize", applyPos);
   }
 
   function copyDebug() {
-    const text = JSON.stringify({ v: "tappedin-1.2", knownIds: ids.size, samples: unresolvedSamples }, null, 1);
+    const text = JSON.stringify({ v: "tappedin-1.7", knownIds: ids.size, samples: unresolvedSamples }, null, 1);
     navigator.clipboard.writeText(text).then(() => alert("Debug info copied — paste it to whoever's helping you fix this."), () => prompt("Copy this:", text));
   }
 
@@ -348,9 +387,10 @@
 
   function render() {
     if (!root) return;
+    if (pos) requestAnimationFrame(applyPos); // panel may have grown: keep it on screen
     root.replaceChildren(...[
-      h("div", { style: { display: "flex", alignItems: "center", gap: "8px" } },
-        h("strong", { style: { fontSize: "13px" } }, "tapped", h("span", { style: { color: "#c6ff3d" } }, "in")),
+      h("div", { "data-tidrag": "1", title: "Drag to move · double-click to reset", style: { display: "flex", alignItems: "center", gap: "8px", cursor: "move", userSelect: "none", touchAction: "none" } },
+        h("strong", { style: { fontSize: "13px" } }, "⠿ tapped", h("span", { style: { color: "#c6ff3d" } }, "in")),
         statusEl,
         h("span", { style: { marginLeft: "auto", display: "flex" } },
           btn("Clear", clearPanel),
