@@ -344,7 +344,7 @@
     if (!pos) { Object.assign(root.style, { left: "12px", bottom: "12px", top: "auto", right: "auto" }); return; }
     const w = root.offsetWidth || 310, hgt = root.offsetHeight || 60;
     pos.x = Math.min(Math.max(0, pos.x), Math.max(0, window.innerWidth - w));
-    pos.y = Math.min(Math.max(0, pos.y), Math.max(0, window.innerHeight - Math.min(hgt, 80)));
+    pos.y = Math.min(Math.max(0, pos.y), Math.max(0, window.innerHeight - hgt));
     Object.assign(root.style, { left: pos.x + "px", top: pos.y + "px", bottom: "auto", right: "auto" });
   }
   function makeDraggable() {
