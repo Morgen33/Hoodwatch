@@ -135,23 +135,25 @@
     } catch { /* ignore */ }
   }
 
+  // the moment you join: X's chat-access reply names the chat room (the Space id). Never keeps tokens.
+  function onAccessChat(j) {
+    try {
+      const pick = {};
+      for (const [k, v] of Object.entries(j || {})) if (/endpoint|url|room|channel|protocol|type/i.test(k) && typeof v !== "object") pick[k] = String(v).split("?")[0].slice(0, 200);
+      diag.chat = { keys: Object.keys(j || {}), ...pick };
+      const rid = j && (j.room_id || j.roomId || j.room);
+      joinedHint = (typeof rid === "string" && /^[A-Za-z0-9_-]{6,40}$/.test(rid)) ? rid : (spaceFromUrl() || lastMetaKey);
+      joinRoom(joinedHint);
+    } catch { /* ignore */ }
+  }
+
   const nativeFetch = window.fetch;
   window.fetch = function (input) {
     const p = nativeFetch.apply(this, arguments);
     try {
       const url = typeof input === "string" ? input : input && input.url;
       if (url) trackHttp(url);
-      if (url && /accessChat/i.test(url)) {
-        // the moment you join: X's reply names the chat room, which is the Space id
-        p.then((r) => r.clone().json()).then((j) => {
-          const pick = {};
-          for (const [k, v] of Object.entries(j || {})) if (/endpoint|url|room|channel|protocol|type/i.test(k) && typeof v !== "object") pick[k] = String(v).split("?")[0].slice(0, 200);
-          diag.chat = { keys: Object.keys(j || {}), ...pick };
-          const rid = j && (j.room_id || j.roomId || j.room);
-          joinedHint = (typeof rid === "string" && /^[A-Za-z0-9_-]{6,40}$/.test(rid)) ? rid : (spaceFromUrl() || lastMetaKey);
-          joinRoom(joinedHint);
-        }).catch(() => {});
-      }
+      if (url && /accessChat/i.test(url)) p.then((r) => r.clone().json()).then(onAccessChat).catch(() => {});
       if (url && SPACE_API.test(url)) p.then((r) => r.clone().json()).then(learn).catch(() => {});
     } catch { /* never break the page */ }
     return p;
@@ -161,6 +163,11 @@
   XMLHttpRequest.prototype.open = function (method, url) {
     try {
       if (url) trackHttp(url);
+      if (url && /accessChat/i.test(String(url))) {
+        this.addEventListener("load", () => {
+          try { onAccessChat(this.responseType === "json" ? this.response : safe(this.responseText)); } catch { /* ignore */ }
+        });
+      }
       if (url && SPACE_API.test(String(url))) {
         this.addEventListener("load", () => {
           try {
@@ -271,7 +278,7 @@
   // ---------- websocket hook ----------
   // X has moved the chat around before, so match the socket loosely and read text or binary frames.
   const CHAT_WS = /chatapi|chatnow|chatman|pscp\.tv|periscope/i;
-  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null };
+  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0 };
   function note(dir, text) {
     diag.recent.push(dir + " " + String(text).slice(0, 700));
     if (diag.recent.length > 60) diag.recent.shift();
@@ -280,27 +287,74 @@
   function toText(d) { // string, Promise<string> (Blob) or null
     if (typeof d === "string") return d;
     try {
-      if (dec && d instanceof ArrayBuffer) return dec.decode(new Uint8Array(d));
+      // tag checks instead of instanceof: data from a hidden frame or worker comes from another realm
+      const tag = Object.prototype.toString.call(d);
+      if (dec && tag === "[object ArrayBuffer]") return dec.decode(new Uint8Array(d));
       if (dec && ArrayBuffer.isView(d)) return dec.decode(d);
-      if (typeof Blob !== "undefined" && d instanceof Blob) return d.text();
+      if (tag === "[object Blob]" && typeof d.text === "function") return d.text();
     } catch { /* unreadable frame */ }
     return null;
   }
   const spaceFromUrl = () => { const m = location.pathname.match(/\/i\/spaces\/([A-Za-z0-9]+)/); return m ? m[1] : null; };
 
-  const Native = window.WebSocket;
-  function Patched(url, protocols) {
-    const ws = protocols !== undefined ? new Native(url, protocols) : new Native(url);
+  function looksNative(fn, name) {
     try {
-      const clean = String(url).split("?")[0];
-      if (diag.sockets.length < 30) diag.sockets.push(clean);
-      if (CHAT_WS.test(clean)) hook(ws);
-    } catch { /* never break the page */ }
-    return ws;
+      Object.defineProperty(fn, "name", { value: name });
+      fn.toString = function () { return `function ${name}() { [native code] }`; };
+    } catch { /* ignore */ }
   }
-  Patched.prototype = Native.prototype;
-  ["CONNECTING", "OPEN", "CLOSING", "CLOSED"].forEach((k) => (Patched[k] = Native[k]));
-  window.WebSocket = Patched;
+  function installWs(win, where) {
+    const Native = win.WebSocket;
+    if (!Native || Native.__ti) return;
+    function Patched(url, protocols) {
+      const ws = protocols !== undefined ? new Native(url, protocols) : new Native(url);
+      try {
+        const clean = String(url).split("?")[0];
+        if (diag.sockets.length < 30) diag.sockets.push(where + " " + clean);
+        if (CHAT_WS.test(clean)) hook(ws);
+      } catch { /* never break the page */ }
+      return ws;
+    }
+    Patched.prototype = Native.prototype;
+    ["CONNECTING", "OPEN", "CLOSING", "CLOSED"].forEach((k) => (Patched[k] = Native[k]));
+    looksNative(Patched, "WebSocket");
+    try { Object.defineProperty(Patched, "__ti", { value: true }); } catch { /* ignore */ }
+    win.WebSocket = Patched;
+  }
+  installWs(window, "page");
+
+  // X can open the chat from a hidden frame to get an untouched WebSocket. Follow it into same-origin frames.
+  function patchFrame(w) {
+    try {
+      if (!w || w === window || w.__tiFrame) return;
+      void w.document; // throws for cross-origin frames: leave those alone
+      Object.defineProperty(w, "__tiFrame", { value: true });
+      diag.frames_++;
+      installWs(w, "frame");
+    } catch { /* cross-origin or gone */ }
+  }
+  try {
+    const cw = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "contentWindow");
+    if (cw && cw.get) {
+      Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow", {
+        configurable: true, enumerable: cw.enumerable,
+        get() { const w = cw.get.call(this); patchFrame(w); return w; },
+      });
+    }
+    const cd = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "contentDocument");
+    if (cd && cd.get) {
+      Object.defineProperty(HTMLIFrameElement.prototype, "contentDocument", {
+        configurable: true, enumerable: cd.enumerable,
+        get() { const d = cd.get.call(this); try { patchFrame(d && d.defaultView); } catch { /* ignore */ } return d; },
+      });
+    }
+    new MutationObserver((muts) => {
+      for (const m of muts) for (const n of m.addedNodes) {
+        if (n && n.tagName === "IFRAME") patchFrame(cw.get.call(n));
+        else if (n && n.querySelectorAll) for (const f of n.querySelectorAll("iframe")) patchFrame(cw.get.call(f));
+      }
+    }).observe(document, { childList: true, subtree: true });
+  } catch { /* ignore */ }
 
   // ---------- other transports X could use for the chat ----------
   try {
@@ -366,7 +420,7 @@
   function fromWorker(d, label) {
     diag.wmsgs++;
     try {
-      if (d instanceof ArrayBuffer || ArrayBuffer.isView(d)) {
+      if (Object.prototype.toString.call(d) === "[object ArrayBuffer]" || ArrayBuffer.isView(d)) {
         if ((d.byteLength || 0) > 65536) return; // audio and other bulk data
         const t = toText(d); if (typeof t === "string") onFrame(t, label);
         return;
@@ -603,10 +657,10 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.10", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.11", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
       http: httpSeen.filter((u) => !/\.(aac|m3u8|ts|mp4)$/.test(u)), sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
-      chat: diag.chat, joinedHint, wmsgs: diag.wmsgs, fromWorkers: diag.wsamples, toWorkers: diag.wout,
+      chat: diag.chat, joinedHint, hiddenFrames: diag.frames_, wmsgs: diag.wmsgs, fromWorkers: diag.wsamples, toWorkers: diag.wout,
       spaceOnPage: !!document.querySelector('[data-testid*="pace" i], [aria-label*="Space" i]'),
       knownIds: ids.size, unnamed: unresolvedSamples, recent: diag.recent.slice(-40),
     }, null, 1);
