@@ -6,6 +6,7 @@
 
   const TAG = "__hoodwatch__";
   const SUB = "__tappedin_sub__";
+  const PlainWS = window.WebSocket; // untouched copy for Tapped In's own read-only chat connection
   let IS_TOP = true; try { IS_TOP = window.top === window; } catch { IS_TOP = false; }
   const ALLOWED_SUB_ORIGIN = /^https:\/\/([a-z0-9-]+\.)*(pscp\.tv|periscope\.tv|x\.com|twitter\.com)$/i;
   function toTop(msg) { try { window.top.postMessage({ [SUB]: true, ...msg }, "*"); } catch { /* ignore */ } }
@@ -160,8 +161,58 @@
       const rid = j && (j.room_id || j.roomId || j.room);
       joinedHint = (typeof rid === "string" && /^[A-Za-z0-9_-]{6,40}$/.test(rid)) ? rid : (spaceFromUrl() || lastMetaKey);
       joinRoom(joinedHint);
+      if (IS_TOP && j && typeof j.access_token === "string" && typeof j.endpoint === "string") ownChat.start(j.endpoint, j.access_token, joinedHint);
     } catch { /* ignore */ }
   }
+
+  // X's page stopped opening the Space chat itself (Oct 2026), but it still hands the browser a chat pass.
+  // Tapped In uses that pass to open the same read-only chat connection X's app used to: it authenticates,
+  // joins the room and only listens. It never sends a message, reaction or anything else into the Space.
+  const ownChat = {
+    ws: null, room: null, token: null, endpoint: null, tries: 0, timer: null, stopped: true,
+    start(endpoint, token, room) {
+      if (!/^https:\/\/[a-z0-9.-]+\.pscp\.tv\/?$/i.test(endpoint) || !room) { diag.own.status = "skipped: unexpected endpoint"; return; }
+      if (this.room === room && this.ws && this.ws.readyState <= 1) { this.token = token; return; }
+      this.stop("switch");
+      Object.assign(this, { endpoint, token, room, tries: 0, stopped: false });
+      this.connect();
+    },
+    connect() {
+      if (this.stopped) return;
+      if (diag.hooked > 0) { diag.own.status = "not needed: X opened the chat itself"; return; }
+      const url = this.endpoint.replace(/^https:/i, "wss:").replace(/\/$/, "") + "/chatapi/v1/chatnow";
+      let ws;
+      try { ws = new PlainWS(url); } catch (e) { diag.own.status = "blocked: " + String(e && e.message || e).slice(0, 120); return; }
+      this.ws = ws; diag.own.status = "connecting"; diag.own.opens++;
+      ws.addEventListener("open", () => {
+        try {
+          ws.send(JSON.stringify({ payload: JSON.stringify({ access_token: this.token }), kind: 3 }));
+          ws.send(JSON.stringify({ payload: JSON.stringify({ body: JSON.stringify({ room: this.room }), kind: 1 }), kind: 2 }));
+          diag.own.status = "listening"; this.tries = 0;
+          state.connected = true; render();
+        } catch { /* ignore */ }
+      });
+      ws.addEventListener("message", (e) => {
+        diag.own.frames++;
+        const t = toText(e.data);
+        if (typeof t === "string") onFrame(t, "own"); else if (t) t.then((x) => onFrame(x, "own"), () => {});
+      });
+      ws.addEventListener("close", (e) => {
+        diag.own.status = "closed " + e.code + (e.reason ? " " + String(e.reason).slice(0, 80) : "");
+        if (this.ws === ws) this.ws = null;
+        if (!this.stopped && this.tries < 6) { const wait = 2000 * Math.pow(2, this.tries++); this.timer = setTimeout(() => this.connect(), wait); }
+        else if (!this.stopped) { state.connected = false; render(); }
+      });
+      ws.addEventListener("error", () => { diag.own.status = "error"; });
+    },
+    stop(why) {
+      this.stopped = true;
+      clearTimeout(this.timer);
+      if (this.ws) { try { this.ws.close(1000, why || "done"); } catch { /* ignore */ } }
+      this.ws = null; this.token = null;
+      if (why) diag.own.status = "stopped: " + why;
+    },
+  };
 
   // Long-running responses (live event streams): read a copy as it arrives and look for reactions.
   const STREAMY = /live_pipeline|subscri|stream|events|pubsub|realtime|chat|livechat|LiveChat|broadcast|guest/i;
@@ -239,6 +290,7 @@
         const url = typeof input === "string" ? input : input && input.url;
         if (url) {
           trackHttp(url, where);
+          if (/stopWatching/i.test(url) && IS_TOP) { ownChat.stop("left the Space"); state.connected = false; if (state.room) post("leave", { room: state.room }); render(); }
           if (init && init.body) outgoingFromRequest(url, init.body);
           if (/accessChat/i.test(url)) p.then((r) => r.clone().json()).then(onAccessChat).catch(() => {});
           else if (SPACE_API.test(url)) p.then((r) => r.clone().json()).then(learn).catch(() => {});
@@ -260,6 +312,7 @@
       try {
         this.__tiUrl = String(url || "");
         if (url) trackHttp(url, where);
+        if (url && /stopWatching/i.test(String(url)) && IS_TOP) { ownChat.stop("left the Space"); state.connected = false; if (state.room) post("leave", { room: state.room }); render(); }
         if (url && /accessChat/i.test(String(url))) {
           this.addEventListener("load", () => { try { onAccessChat(this.responseType === "json" ? this.response : safe(this.responseText)); } catch { /* ignore */ } });
         } else if (url && SPACE_API.test(String(url))) {
@@ -395,7 +448,7 @@
   // ---------- websocket hook ----------
   // X has moved the chat around before, so match the socket loosely and read text or binary frames.
   const CHAT_WS = /chatapi|chatnow|chatman|pscp\.tv|periscope/i;
-  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [], subframes: [] };
+  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [], subframes: [], own: { status: "idle", opens: 0, frames: 0 } };
   function note(dir, text) {
     diag.recent.push(dir + " " + String(text).slice(0, 700));
     if (diag.recent.length > 60) diag.recent.shift();
@@ -612,6 +665,7 @@
 
   function hook(ws) {
     diag.hooked++;
+    if (IS_TOP && ownChat.ws) ownChat.stop("X opened the chat itself");
     const origSend = ws.send;
     ws.send = function (data) {
       try {
@@ -798,10 +852,10 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.13", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.14", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
       http: httpSeen, streams: diag.streams, fromStreams: diag.streamSamples, sent: diag.sentSamples, sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
-      chat: diag.chat, joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
+      chat: diag.chat, ownChat: diag.own, joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
       iframes: [...document.querySelectorAll("iframe")].slice(0, 20).map((f) => (f.getAttribute("src") || "(no src)").split("?")[0].slice(0, 150) + (f.getAttribute("sandbox") != null ? " [sandbox]" : "")), wmsgs: diag.wmsgs, fromWorkers: diag.wsamples, toWorkers: diag.wout,
       spaceOnPage: !!document.querySelector('[data-testid*="pace" i], [aria-label*="Space" i]'),
       knownIds: ids.size, unnamed: unresolvedSamples, recent: diag.recent.slice(-40),
@@ -833,7 +887,7 @@
         state.title, state.host ? h("span", { style: { color: "#8b8b96", fontWeight: "400" } }, ` · @${state.host}`) : null) : null,
       syncEl,
     ].filter(Boolean));
-    statusEl.textContent = !diag.hooked
+    statusEl.textContent = (!diag.hooked && !state.connected && !state.room)
       ? (spaceFromUrl() ? "○ waiting for the Space chat — hit Start listening" : "○ open a Space to start")
       : `${state.connected ? "● live" : "○ idle"} · ${state.count} reactions${state.listeners != null ? ` · ${state.listeners} listening` : ""}`;
     statusEl.style.color = state.connected ? "#c6ff3d" : "#8b8b96";
