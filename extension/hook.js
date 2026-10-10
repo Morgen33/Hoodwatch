@@ -126,12 +126,21 @@
   }
 
   const SPACE_API = /AudioSpace|audiospace|live_video_stream|\/spaces?\b|chatnow|Participants/i;
+  const CHATTY = /pscp|periscope|chat|broadcast|live_video|audiospace|janus|guest|spaces?\b/i;
+  const httpSeen = [];
+  function trackHttp(url) {
+    try {
+      const u = String(url).split("?")[0];
+      if (CHATTY.test(u) && !httpSeen.includes(u) && httpSeen.length < 40) httpSeen.push(u);
+    } catch { /* ignore */ }
+  }
 
   const nativeFetch = window.fetch;
   window.fetch = function (input) {
     const p = nativeFetch.apply(this, arguments);
     try {
       const url = typeof input === "string" ? input : input && input.url;
+      if (url) trackHttp(url);
       if (url && SPACE_API.test(url)) p.then((r) => r.clone().json()).then(learn).catch(() => {});
     } catch { /* never break the page */ }
     return p;
@@ -140,6 +149,7 @@
   const xOpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function (method, url) {
     try {
+      if (url) trackHttp(url);
       if (url && SPACE_API.test(String(url))) {
         this.addEventListener("load", () => {
           try {
@@ -227,7 +237,7 @@
   // ---------- websocket hook ----------
   // X has moved the chat around before, so match the socket loosely and read text or binary frames.
   const CHAT_WS = /chatapi|chatnow|chatman|pscp\.tv|periscope/i;
-  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [] };
+  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [] };
   function note(dir, text) {
     diag.recent.push(dir + " " + String(text).slice(0, 700));
     if (diag.recent.length > 60) diag.recent.shift();
@@ -257,6 +267,65 @@
   Patched.prototype = Native.prototype;
   ["CONNECTING", "OPEN", "CLOSING", "CLOSED"].forEach((k) => (Patched[k] = Native[k]));
   window.WebSocket = Patched;
+
+  // ---------- other transports X could use for the chat ----------
+  try {
+    const NES = window.EventSource;
+    if (NES) {
+      const E = function (url, cfg) {
+        const es = new NES(url, cfg);
+        try {
+          const clean = String(url).split("?")[0];
+          if (diag.sse.length < 20) diag.sse.push(clean);
+          es.addEventListener("message", (e) => onFrame(String(e.data), "sse"));
+        } catch { /* ignore */ }
+        return es;
+      };
+      E.prototype = NES.prototype; ["CONNECTING", "OPEN", "CLOSED"].forEach((k) => (E[k] = NES[k]));
+      window.EventSource = E;
+    }
+  } catch { /* ignore */ }
+
+  function watchChannel(ch) {
+    try {
+      if (diag.channels.length < 20) diag.channels.push(ch.label || "(no label)");
+      ch.addEventListener("message", (e) => {
+        const t = toText(e.data);
+        if (typeof t === "string") onFrame(t, "dc"); else if (t) t.then((x) => onFrame(x, "dc"), () => {});
+      });
+    } catch { /* ignore */ }
+  }
+  try {
+    const NRTC = window.RTCPeerConnection;
+    if (NRTC) {
+      const R = function (...args) {
+        const pc = new NRTC(...args);
+        try {
+          diag.rtc++;
+          pc.addEventListener("datachannel", (e) => watchChannel(e.channel));
+          const oc = pc.createDataChannel;
+          pc.createDataChannel = function () { const ch = oc.apply(this, arguments); watchChannel(ch); return ch; };
+        } catch { /* ignore */ }
+        return pc;
+      };
+      R.prototype = NRTC.prototype;
+      Object.setPrototypeOf(R, NRTC);
+      window.RTCPeerConnection = R;
+    }
+  } catch { /* ignore */ }
+
+  for (const k of ["Worker", "SharedWorker"]) {
+    try {
+      const N = window[k];
+      if (!N) continue;
+      const Wk = function (url, opts) {
+        try { if (diag.workers.length < 20) diag.workers.push(k + ": " + String(url).split("?")[0].slice(0, 200)); } catch { /* ignore */ }
+        return opts !== undefined ? new N(url, opts) : new N(url);
+      };
+      Wk.prototype = N.prototype;
+      window[k] = Wk;
+    } catch { /* ignore */ }
+  }
 
   function joinRoom(r) {
     if (!r || r === state.room) return;
@@ -303,13 +372,14 @@
     });
   }
 
-  function onFrame(t) {
+  function onFrame(t, src) {
     diag.frames++;
-    note("in", t);
+    note("in" + (src ? ":" + src : ""), t);
     let ev = null;
     try { ev = parse(t); } catch { ev = null; }
     if (!ev) return;
     diag.parsed++;
+    if (src && !state.connected) { state.connected = true; ui(); }
     if (!state.room) joinRoom(spaceFromUrl() || lastMetaKey); // X didn't announce the room: use the Space we're on
     if (!state.room) return;
     if (ev.kind === "reaction") {
@@ -443,8 +513,10 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.8", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.9", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
+      http: httpSeen, sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
+      spaceOnPage: !!document.querySelector('[data-testid*="pace" i], [aria-label*="Space" i]'),
       knownIds: ids.size, unnamed: unresolvedSamples, recent: diag.recent.slice(-40),
     }, null, 1);
     const done = () => alert("Debug info copied — paste it to Claude.");
