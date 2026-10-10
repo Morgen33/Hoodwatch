@@ -5,6 +5,10 @@
   if (window.__hoodwatch) return;
 
   const TAG = "__hoodwatch__";
+  const SUB = "__tappedin_sub__";
+  let IS_TOP = true; try { IS_TOP = window.top === window; } catch { IS_TOP = false; }
+  const ALLOWED_SUB_ORIGIN = /^https:\/\/([a-z0-9-]+\.)*(pscp\.tv|periscope\.tv|x\.com|twitter\.com)$/i;
+  function toTop(msg) { try { window.top.postMessage({ [SUB]: true, ...msg }, "*"); } catch { /* ignore */ } }
   const state = { room: null, connected: false, count: 0, listeners: null, feed: [], board: new Map(), emojiTotals: new Map(), sync: "idle", min: false, tab: "feed" };
 
   const safe = (t) => { if (t && typeof t === "object") return t; try { return JSON.parse(t); } catch { return null; } };
@@ -391,7 +395,7 @@
   // ---------- websocket hook ----------
   // X has moved the chat around before, so match the socket loosely and read text or binary frames.
   const CHAT_WS = /chatapi|chatnow|chatman|pscp\.tv|periscope/i;
-  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [] };
+  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [], subframes: [] };
   function note(dir, text) {
     diag.recent.push(dir + " " + String(text).slice(0, 700));
     if (diag.recent.length > 60) diag.recent.shift();
@@ -424,6 +428,7 @@
       try {
         const clean = String(url).split("?")[0];
         if (diag.sockets.length < 30) diag.sockets.push(where + " " + clean);
+        if (!IS_TOP) toTop({ note: "socket " + clean });
         if (CHAT_WS.test(clean)) hook(ws);
       } catch { /* never break the page */ }
       return ws;
@@ -472,6 +477,17 @@
   } catch { /* ignore */ }
 
   // ---------- other transports X could use for the chat ----------
+  try {
+    const NWT = window.WebTransport;
+    if (NWT) {
+      const T = function (url, opts) {
+        try { const u = "webtransport " + String(url).split("?")[0]; diag.sockets.push(u); if (!IS_TOP) toTop({ note: u }); } catch { /* ignore */ }
+        return opts !== undefined ? new NWT(url, opts) : new NWT(url);
+      };
+      T.prototype = NWT.prototype; Object.setPrototypeOf(T, NWT); looksNative(T, "WebTransport");
+      window.WebTransport = T;
+    }
+  } catch { /* ignore */ }
   try {
     const NES = window.EventSource;
     if (NES) {
@@ -637,6 +653,7 @@
 
   function handle(ev, src) {
     if (!ev) return;
+    if (!IS_TOP) { toTop({ ev, src: "subframe" }); return; }
     diag.parsed++;
     if (src && !state.connected) { state.connected = true; ui(); }
     if (!state.room) joinRoom(spaceFromUrl() || joinedHint || lastMetaKey); // X didn't announce the room: use the Space we're on
@@ -694,6 +711,15 @@
     return null;
   }
 
+  if (IS_TOP) window.addEventListener("message", (e) => {
+    try {
+      if (!e.data || !e.data[SUB] || e.source === window || !ALLOWED_SUB_ORIGIN.test(e.origin)) return;
+      if (e.data.note) { if (diag.subframes.length < 30) diag.subframes.push(e.origin + " " + String(e.data.note).slice(0, 200)); return; }
+      if (e.data.ev && (e.data.ev.kind === "reaction" || e.data.ev.kind === "occupancy")) handle(e.data.ev, "subframe");
+    } catch { /* ignore */ }
+  });
+  if (!IS_TOP) toTop({ note: "loaded " + location.origin + location.pathname });
+
   window.addEventListener("message", (e) => {
     if (e.source !== window || !e.data || !e.data[TAG] || e.data.dir !== "in") return;
     if (e.data.type === "sync") { state.sync = e.data.data; render(); }
@@ -717,7 +743,7 @@
   } }, label);
 
   function ui() {
-    if (root) return;
+    if (root || !IS_TOP) return;
     if (!document.body) { document.addEventListener("DOMContentLoaded", ui, { once: true }); return; }
     statusEl = h("span", { style: { color: "#8b8b96", fontSize: "11px" } });
     syncEl = h("div", { style: { fontSize: "11px", marginTop: "6px" } });
@@ -772,10 +798,11 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.12", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.13", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
       http: httpSeen, streams: diag.streams, fromStreams: diag.streamSamples, sent: diag.sentSamples, sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
-      chat: diag.chat, joinedHint, hiddenFrames: diag.frames_, wmsgs: diag.wmsgs, fromWorkers: diag.wsamples, toWorkers: diag.wout,
+      chat: diag.chat, joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
+      iframes: [...document.querySelectorAll("iframe")].slice(0, 20).map((f) => (f.getAttribute("src") || "(no src)").split("?")[0].slice(0, 150) + (f.getAttribute("sandbox") != null ? " [sandbox]" : "")), wmsgs: diag.wmsgs, fromWorkers: diag.wsamples, toWorkers: diag.wout,
       spaceOnPage: !!document.querySelector('[data-testid*="pace" i], [aria-label*="Space" i]'),
       knownIds: ids.size, unnamed: unresolvedSamples, recent: diag.recent.slice(-40),
     }, null, 1);

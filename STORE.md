@@ -40,7 +40,7 @@ Records emoji reactions and listener counts in X Spaces the user is listening to
 ## Permission justifications
 - **storage**: saves the user's Tapped In key locally.
 - **host permission (supabase.co)**: sends the Space's reactions to the user's Tapped In account.
-- **content script on x.com / twitter.com**: reads Space reaction events from the page while the user is in a Space.
+- **content script on x.com / twitter.com (and X's own Spaces domains pscp.tv / periscope.tv, inside X's embedded frames)**: reads Space reaction events while the user is in a Space. Read-only; never sends anything.
 
 ## Data usage disclosures (tick these)
 - Collects: "Website content" (reactions shown in the Space), "Authentication information" (the Tapped In key, stored locally)

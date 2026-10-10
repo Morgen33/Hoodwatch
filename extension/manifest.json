@@ -1,23 +1,53 @@
 {
   "manifest_version": 3,
   "name": "Tapped In",
-  "version": "1.12.0",
+  "version": "1.13.0",
   "description": "See who's reacting in your X Spaces. Syncs reactions to your Tapped In dashboard.",
-  "permissions": ["storage"],
-  "host_permissions": ["https://gyspxodpxmpzxwskrbia.supabase.co/*"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "Tapped In", "default_icon": { "128": "icon128.png" } },
-  "icons": { "128": "icon128.png" },
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://gyspxodpxmpzxwskrbia.supabase.co/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Tapped In",
+    "default_icon": {
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "128": "icon128.png"
+  },
   "content_scripts": [
     {
-      "matches": ["https://x.com/*", "https://twitter.com/*"],
-      "js": ["hook.js"],
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*",
+        "https://*.x.com/*",
+        "https://*.twitter.com/*",
+        "https://*.pscp.tv/*",
+        "https://*.periscope.tv/*"
+      ],
+      "js": [
+        "hook.js"
+      ],
       "run_at": "document_start",
-      "world": "MAIN"
+      "world": "MAIN",
+      "all_frames": true,
+      "match_about_blank": true
     },
     {
-      "matches": ["https://x.com/*", "https://twitter.com/*"],
-      "js": ["bridge.js"],
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
       "run_at": "document_start"
     }
   ]
