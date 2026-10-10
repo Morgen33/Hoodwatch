@@ -74,7 +74,7 @@
 
   // X's Space info (AudioSpaceById): the real title, who's hosting, and whether it has ended.
   const metas = new Map();
-  let lastMetaKey = null;
+  let lastMetaKey = null, joinedHint = null;
   function spaceMeta(space) {
     const m = space.metadata;
     const person = (x) => {
@@ -141,6 +141,17 @@
     try {
       const url = typeof input === "string" ? input : input && input.url;
       if (url) trackHttp(url);
+      if (url && /accessChat/i.test(url)) {
+        // the moment you join: X's reply names the chat room, which is the Space id
+        p.then((r) => r.clone().json()).then((j) => {
+          const pick = {};
+          for (const [k, v] of Object.entries(j || {})) if (/endpoint|url|room|channel|protocol|type/i.test(k) && typeof v !== "object") pick[k] = String(v).split("?")[0].slice(0, 200);
+          diag.chat = { keys: Object.keys(j || {}), ...pick };
+          const rid = j && (j.room_id || j.roomId || j.room);
+          joinedHint = (typeof rid === "string" && /^[A-Za-z0-9_-]{6,40}$/.test(rid)) ? rid : (spaceFromUrl() || lastMetaKey);
+          joinRoom(joinedHint);
+        }).catch(() => {});
+      }
       if (url && SPACE_API.test(url)) p.then((r) => r.clone().json()).then(learn).catch(() => {});
     } catch { /* never break the page */ }
     return p;
@@ -210,7 +221,7 @@
       if (o.type === 2 && typeof o.body === "string" && o.body.length <= 16 && EMOJI_ISH.test(o.body)) { found = o; sender = snd; return; }
       for (const k in o) walk(o[k], depth + 1, snd);
     })(raw, 0, null);
-    if (!found) return null;
+    if (!found) return occupancyDeep(raw);
     const s = sender || {};
     const known = lookup(s.twitter_id, s.user_id, found.remoteID, found.twitter_id, found.user_id);
     return { kind: "reaction", r: {
@@ -220,6 +231,29 @@
       displayName: s.display_name || found.displayName || (known && known.displayName) || null,
       userId: String(s.twitter_id || s.user_id || found.remoteID || found.twitter_id || found.user_id || "") || null,
     } };
+  }
+
+  function occupancyDeep(raw) {
+    let o = null, budget = 300;
+    (function walk(x, depth) {
+      if (o || depth > 7 || --budget < 0) return;
+      if (typeof x === "string") { if (x.length > 1 && (x[0] === "{" || x[0] === "[")) walk(safe(x), depth + 1); return; }
+      if (!x || typeof x !== "object") return;
+      if (typeof x.occupancy === "number") { o = x; return; }
+      for (const k in x) walk(x[k], depth + 1);
+    })(raw, 0);
+    return o ? { kind: "occupancy", o: { ts: Date.now(), listeners: o.occupancy, total: o.total_participants || null } } : null;
+  }
+  function outgoingDeep(d) {
+    let e = null, budget = 200;
+    (function walk(x, depth) {
+      if (e || depth > 6 || --budget < 0) return;
+      if (typeof x === "string") { if (x.length > 1 && (x[0] === "{" || x[0] === "[")) walk(safe(x), depth + 1); return; }
+      if (!x || typeof x !== "object") return;
+      if (x.type === 2 && typeof x.body === "string" && x.body.length <= 16 && EMOJI_ISH.test(x.body)) { e = x.body; return; }
+      for (const k in x) walk(x[k], depth + 1);
+    })(d, 0);
+    return e;
   }
 
   function roomFrom(data) {
@@ -237,7 +271,7 @@
   // ---------- websocket hook ----------
   // X has moved the chat around before, so match the socket loosely and read text or binary frames.
   const CHAT_WS = /chatapi|chatnow|chatman|pscp\.tv|periscope/i;
-  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [] };
+  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null };
   function note(dir, text) {
     diag.recent.push(dir + " " + String(text).slice(0, 700));
     if (diag.recent.length > 60) diag.recent.shift();
@@ -314,15 +348,67 @@
     }
   } catch { /* ignore */ }
 
+  // X now runs the Space chat inside background workers. We can't reach inside them, but the reactions have to
+  // come back to the page to be shown, so we listen to what workers send the page. Passive: nothing is changed.
+  function sample(list, dir, d, cap) {
+    if (list.length >= cap) return;
+    let t;
+    try {
+      t = typeof d === "string" ? d : JSON.stringify(d, (k, v) =>
+        (v instanceof ArrayBuffer || ArrayBuffer.isView(v)) ? `[bin ${v.byteLength}]` :
+        (typeof v === "string" && v.length > 300) ? v.slice(0, 300) + "…" :
+        (Array.isArray(v) && v.length > 20) ? v.slice(0, 20).concat(["…" + v.length]) : v);
+    } catch { t = Object.prototype.toString.call(d); }
+    t = dir + " " + String(t).slice(0, 700);
+    const sig = t.slice(0, 90);
+    if (!list.some((x) => x.slice(0, 90) === sig)) list.push(t);
+  }
+  function fromWorker(d, label) {
+    diag.wmsgs++;
+    try {
+      if (d instanceof ArrayBuffer || ArrayBuffer.isView(d)) {
+        if ((d.byteLength || 0) > 65536) return; // audio and other bulk data
+        const t = toText(d); if (typeof t === "string") onFrame(t, label);
+        return;
+      }
+      if (typeof d === "string") { onFrame(d, label); return; }
+      if (!d || typeof d !== "object") return;
+      sample(diag.wsamples, "in:" + label, d, 40);
+      handle(parseDeep(d), label);
+    } catch { /* never break the page */ }
+  }
+  function toWorker(d, label) {
+    try {
+      sample(diag.wout, "out:" + label, d, 15);
+      const t = typeof d === "string" ? d : null;
+      const emoji = state.room && (t ? outgoingReaction(t) : outgoingDeep(d));
+      if (emoji) {
+        const me = self();
+        selfSent.push({ emoji, ts: Date.now() }); if (selfSent.length > 50) selfSent.shift();
+        addReaction({ ts: Date.now(), emoji, username: me.username, displayName: me.displayName, userId: me.id });
+        render();
+      }
+    } catch { /* ignore */ }
+  }
   for (const k of ["Worker", "SharedWorker"]) {
     try {
       const N = window[k];
       if (!N) continue;
       const Wk = function (url, opts) {
-        try { if (diag.workers.length < 20) diag.workers.push(k + ": " + String(url).split("?")[0].slice(0, 200)); } catch { /* ignore */ }
-        return opts !== undefined ? new N(url, opts) : new N(url);
+        const w = opts !== undefined ? new N(url, opts) : new N(url);
+        try {
+          const n = diag.workers.length;
+          const label = (k === "Worker" ? "w" : "sw") + n;
+          if (n < 20) diag.workers.push(label + " " + String(url).split("?")[0].slice(0, 200));
+          const target = k === "SharedWorker" ? w.port : w;
+          target.addEventListener("message", (e) => fromWorker(e.data, label)); // fires once X starts the port
+          const op = target.postMessage;
+          target.postMessage = function (msg) { toWorker(msg, label); return op.apply(this, arguments); };
+        } catch { /* ignore */ }
+        return w;
       };
       Wk.prototype = N.prototype;
+      Object.setPrototypeOf(Wk, N);
       window[k] = Wk;
     } catch { /* ignore */ }
   }
@@ -377,10 +463,14 @@
     note("in" + (src ? ":" + src : ""), t);
     let ev = null;
     try { ev = parse(t); } catch { ev = null; }
+    handle(ev, src);
+  }
+
+  function handle(ev, src) {
     if (!ev) return;
     diag.parsed++;
     if (src && !state.connected) { state.connected = true; ui(); }
-    if (!state.room) joinRoom(spaceFromUrl() || lastMetaKey); // X didn't announce the room: use the Space we're on
+    if (!state.room) joinRoom(spaceFromUrl() || joinedHint || lastMetaKey); // X didn't announce the room: use the Space we're on
     if (!state.room) return;
     if (ev.kind === "reaction") {
       // if X ever echoes our own reaction back, don't count it twice
@@ -513,9 +603,10 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.9", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.10", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
-      http: httpSeen, sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
+      http: httpSeen.filter((u) => !/\.(aac|m3u8|ts|mp4)$/.test(u)), sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
+      chat: diag.chat, joinedHint, wmsgs: diag.wmsgs, fromWorkers: diag.wsamples, toWorkers: diag.wout,
       spaceOnPage: !!document.querySelector('[data-testid*="pace" i], [aria-label*="Space" i]'),
       knownIds: ids.size, unnamed: unresolvedSamples, recent: diag.recent.slice(-40),
     }, null, 1);
