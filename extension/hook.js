@@ -74,6 +74,7 @@
 
   // X's Space info (AudioSpaceById): the real title, who's hosting, and whether it has ended.
   const metas = new Map();
+  let lastMetaKey = null;
   function spaceMeta(space) {
     const m = space.metadata;
     const person = (x) => {
@@ -119,8 +120,9 @@
     }
     if (prev && JSON.stringify(prev) === JSON.stringify(meta)) return;
     metas.set(key, meta);
-    post("meta", { room: key, meta });
-    if (key === state.room) { state.title = meta.title; state.host = meta.host_handle; render(); }
+    lastMetaKey = key;
+    // only the Space you're actually in goes to the dashboard (X loads info for every Space card on the timeline)
+    if (key === state.room) { post("meta", { room: key, meta }); state.title = meta.title; state.host = meta.host_handle; render(); }
   }
 
   const SPACE_API = /AudioSpace|audiospace|live_video_stream|\/spaces?\b|chatnow|Participants/i;
@@ -151,7 +153,9 @@
   };
 
   // ---------- chat frame parsing ----------
-  function parse(raw) {
+  function parse(raw) { return parseStd(raw) || parseDeep(raw); }
+
+  function parseStd(raw) {
     const msg = safe(raw);
     if (!msg || !msg.payload) return null;
     const payload = safe(msg.payload);
@@ -184,6 +188,30 @@
     return null;
   }
 
+  // Fallback: dig through nested JSON (strings inside strings) for a reaction-shaped object.
+  const EMOJI_ISH = /[^\x00-\x7F]/;
+  function parseDeep(raw) {
+    let found = null, sender = null, budget = 400;
+    (function walk(o, depth, from) {
+      if (found || depth > 7 || --budget < 0) return;
+      if (typeof o === "string") { if (o.length > 1 && (o[0] === "{" || o[0] === "[")) walk(safe(o), depth + 1, from); return; }
+      if (!o || typeof o !== "object") return;
+      const snd = (o.sender && typeof o.sender === "object") ? o.sender : from;
+      if (o.type === 2 && typeof o.body === "string" && o.body.length <= 16 && EMOJI_ISH.test(o.body)) { found = o; sender = snd; return; }
+      for (const k in o) walk(o[k], depth + 1, snd);
+    })(raw, 0, null);
+    if (!found) return null;
+    const s = sender || {};
+    const known = lookup(s.twitter_id, s.user_id, found.remoteID, found.twitter_id, found.user_id);
+    return { kind: "reaction", r: {
+      ts: Date.now(),
+      emoji: found.body.slice(0, 32),
+      username: s.username || found.username || (known && known.username) || null,
+      displayName: s.display_name || found.displayName || (known && known.displayName) || null,
+      userId: String(s.twitter_id || s.user_id || found.remoteID || found.twitter_id || found.user_id || "") || null,
+    } };
+  }
+
   function roomFrom(data) {
     const m = safe(data); const p = m && safe(m.payload); const b = p && safe(p.body);
     return (b && b.room) || null;
@@ -197,37 +225,67 @@
   }
 
   // ---------- websocket hook ----------
+  // X has moved the chat around before, so match the socket loosely and read text or binary frames.
+  const CHAT_WS = /chatapi|chatnow|chatman|pscp\.tv|periscope/i;
+  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [] };
+  function note(dir, text) {
+    diag.recent.push(dir + " " + String(text).slice(0, 700));
+    if (diag.recent.length > 60) diag.recent.shift();
+  }
+  const dec = typeof TextDecoder !== "undefined" ? new TextDecoder() : null;
+  function toText(d) { // string, Promise<string> (Blob) or null
+    if (typeof d === "string") return d;
+    try {
+      if (dec && d instanceof ArrayBuffer) return dec.decode(new Uint8Array(d));
+      if (dec && ArrayBuffer.isView(d)) return dec.decode(d);
+      if (typeof Blob !== "undefined" && d instanceof Blob) return d.text();
+    } catch { /* unreadable frame */ }
+    return null;
+  }
+  const spaceFromUrl = () => { const m = location.pathname.match(/\/i\/spaces\/([A-Za-z0-9]+)/); return m ? m[1] : null; };
+
   const Native = window.WebSocket;
   function Patched(url, protocols) {
     const ws = protocols !== undefined ? new Native(url, protocols) : new Native(url);
-    if (String(url).includes("/chatapi/v1/chatnow")) hook(ws);
+    try {
+      const clean = String(url).split("?")[0];
+      if (diag.sockets.length < 30) diag.sockets.push(clean);
+      if (CHAT_WS.test(clean)) hook(ws);
+    } catch { /* never break the page */ }
     return ws;
   }
   Patched.prototype = Native.prototype;
   ["CONNECTING", "OPEN", "CLOSING", "CLOSED"].forEach((k) => (Patched[k] = Native[k]));
   window.WebSocket = Patched;
 
+  function joinRoom(r) {
+    if (!r || r === state.room) return;
+    state.room = r; state.count = 0; state.feed = []; state.board = new Map(); state.emojiTotals = new Map(); state.listeners = null;
+    post("join", { room: r, title: spaceTitle() });
+    const known = metas.get(r);
+    if (known) { post("meta", { room: r, meta: known }); state.title = known.title; state.host = known.host_handle; }
+    // hand over everything we learned before the chat connected
+    const names = [...ids].map(([userId, v]) => ({ userId, username: v.username, displayName: v.displayName }));
+    if (names.length) post("names", { room: r, names: names.slice(-2000) });
+    render();
+  }
+
   function hook(ws) {
+    diag.hooked++;
     const origSend = ws.send;
     ws.send = function (data) {
-      const r = typeof data === "string" && roomFrom(data);
-      if (r && r !== state.room) {
-        state.room = r; state.count = 0; state.feed = []; state.board = new Map(); state.emojiTotals = new Map(); state.listeners = null;
-        post("join", { room: r, title: spaceTitle() });
-        const known = metas.get(r);
-        if (known) { post("meta", { room: r, meta: known }); state.title = known.title; state.host = known.host_handle; }
-        // hand over everything we learned before the chat connected
-        const names = [...ids].map(([userId, v]) => ({ userId, username: v.username, displayName: v.displayName }));
-        if (names.length) post("names", { room: r, names: names.slice(-2000) });
-        render();
-      }
       try {
-        const emoji = typeof data === "string" && state.room && outgoingReaction(data);
-        if (emoji) {
-          const me = self();
-          selfSent.push({ emoji, ts: Date.now() }); if (selfSent.length > 50) selfSent.shift();
-          addReaction({ ts: Date.now(), emoji, username: me.username, displayName: me.displayName, userId: me.id });
-          render();
+        const t = toText(data);
+        if (typeof t === "string") {
+          note("out", t);
+          joinRoom(roomFrom(t));
+          const emoji = state.room && outgoingReaction(t);
+          if (emoji) {
+            const me = self();
+            selfSent.push({ emoji, ts: Date.now() }); if (selfSent.length > 50) selfSent.shift();
+            addReaction({ ts: Date.now(), emoji, username: me.username, displayName: me.displayName, userId: me.id });
+            render();
+          }
         }
       } catch { /* never break sending */ }
       return origSend.apply(this, arguments);
@@ -239,23 +297,34 @@
       render();
     });
     ws.addEventListener("message", (e) => {
-      if (typeof e.data !== "string" || !state.room) return;
-      const ev = parse(e.data);
-      if (!ev) return;
-      if (ev.kind === "reaction") {
-        // if X ever echoes our own reaction back, don't count it twice
-        const me = self();
-        if (me.id && (ev.r.userId === me.id || (me.username && ev.r.username && ev.r.username.toLowerCase() === me.username.toLowerCase()))) {
-          const i = selfSent.findIndex((x) => x.emoji === ev.r.emoji && Date.now() - x.ts < 8000);
-          if (i >= 0) { selfSent.splice(i, 1); return; }
-        }
-        addReaction(ev.r);
-      } else {
-        post("occupancy", { room: state.room, ...ev.o });
-        state.listeners = ev.o.listeners;
-      }
-      render();
+      const t = toText(e.data);
+      if (t == null) return;
+      if (typeof t === "string") onFrame(t); else t.then(onFrame, () => {});
     });
+  }
+
+  function onFrame(t) {
+    diag.frames++;
+    note("in", t);
+    let ev = null;
+    try { ev = parse(t); } catch { ev = null; }
+    if (!ev) return;
+    diag.parsed++;
+    if (!state.room) joinRoom(spaceFromUrl() || lastMetaKey); // X didn't announce the room: use the Space we're on
+    if (!state.room) return;
+    if (ev.kind === "reaction") {
+      // if X ever echoes our own reaction back, don't count it twice
+      const me = self();
+      if (me.id && (ev.r.userId === me.id || (me.username && ev.r.username && ev.r.username.toLowerCase() === me.username.toLowerCase()))) {
+        const i = selfSent.findIndex((x) => x.emoji === ev.r.emoji && Date.now() - x.ts < 8000);
+        if (i >= 0) { selfSent.splice(i, 1); return; }
+      }
+      addReaction(ev.r);
+    } else {
+      post("occupancy", { room: state.room, ...ev.o });
+      state.listeners = ev.o.listeners;
+    }
+    render();
   }
 
   function addReaction(r) {
@@ -373,8 +442,14 @@
   }
 
   function copyDebug() {
-    const text = JSON.stringify({ v: "tappedin-1.7", knownIds: ids.size, samples: unresolvedSamples }, null, 1);
-    navigator.clipboard.writeText(text).then(() => alert("Debug info copied — paste it to whoever's helping you fix this."), () => prompt("Copy this:", text));
+    const text = JSON.stringify({
+      v: "tappedin-1.8", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
+      knownIds: ids.size, unnamed: unresolvedSamples, recent: diag.recent.slice(-40),
+    }, null, 1);
+    const done = () => alert("Debug info copied — paste it to Claude.");
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, () => prompt("Copy this:", text));
+    else prompt("Copy this:", text);
   }
 
   // Wipes the panel only. Anything already synced stays on the dashboard.
@@ -399,7 +474,9 @@
         state.title, state.host ? h("span", { style: { color: "#8b8b96", fontWeight: "400" } }, ` · @${state.host}`) : null) : null,
       syncEl,
     ].filter(Boolean));
-    statusEl.textContent = `${state.connected ? "● live" : "○ idle"} · ${state.count} reactions${state.listeners != null ? ` · ${state.listeners} listening` : ""}`;
+    statusEl.textContent = !diag.hooked
+      ? (spaceFromUrl() ? "○ waiting for the Space chat — hit Start listening" : "○ open a Space to start")
+      : `${state.connected ? "● live" : "○ idle"} · ${state.count} reactions${state.listeners != null ? ` · ${state.listeners} listening` : ""}`;
     statusEl.style.color = state.connected ? "#c6ff3d" : "#8b8b96";
 
     const s = state.sync;
@@ -419,7 +496,7 @@
       btn("Feed", () => { state.tab = "feed"; render(); }, state.tab === "feed"),
       btn("Leaderboard", () => { state.tab = "top"; render(); }, state.tab === "top"),
       btn("Emojis", () => { state.tab = "emojis"; render(); }, state.tab === "emojis"),
-      unnamed ? h("span", { style: { marginLeft: "auto" } }, btn(`${unnamed} unnamed · copy debug`, copyDebug)) : null), bodyEl);
+      h("span", { style: { marginLeft: "auto" } }, btn(unnamed ? `${unnamed} unnamed · debug` : "debug", copyDebug))), bodyEl);
     bodyEl.replaceChildren();
     const row = (kids) => h("div", { style: { padding: "3px 0", borderBottom: "1px solid #1b1b21", display: "flex", gap: "6px", alignItems: "center" } }, kids);
     const who = (u) => u.username
