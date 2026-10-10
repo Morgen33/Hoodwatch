@@ -126,20 +126,32 @@
   }
 
   const SPACE_API = /AudioSpace|audiospace|live_video_stream|\/spaces?\b|chatnow|Participants/i;
-  const CHATTY = /pscp|periscope|chat|broadcast|live_video|audiospace|janus|guest|spaces?\b/i;
+  const MEDIA = /\.(aac|m3u8|ts|mp4|m4s|jpe?g|png|webp|gif|svg|css|js|woff2?|ico)$/i;
   const httpSeen = [];
-  function trackHttp(url) {
+  function trackHttp(url, where) {
     try {
       const u = String(url).split("?")[0];
-      if (CHATTY.test(u) && !httpSeen.includes(u) && httpSeen.length < 40) httpSeen.push(u);
+      if (MEDIA.test(u) || /\/(jot|1\.1\/jot|client_event|log)\b/i.test(u)) return;
+      const tag = (where ? where + " " : "") + u;
+      if (!httpSeen.includes(tag) && httpSeen.length < 90) httpSeen.push(tag);
     } catch { /* ignore */ }
+  }
+
+  // Describe a value without keeping secrets: URLs become host+path, other strings just their length.
+  function shape(v) {
+    if (v == null) return v;
+    if (typeof v === "string") return /^(https?|wss?):\/\//i.test(v) ? v.split("?")[0].slice(0, 200) : `str(${v.length})`;
+    if (typeof v !== "object") return v;
+    if (Array.isArray(v)) return `array(${v.length})`;
+    const o = {}; for (const [k, x] of Object.entries(v).slice(0, 20)) o[k] = typeof x === "object" && x ? (Array.isArray(x) ? `array(${x.length})` : "{" + Object.keys(x).slice(0, 12).join(",") + "}") : shape(x);
+    return o;
   }
 
   // the moment you join: X's chat-access reply names the chat room (the Space id). Never keeps tokens.
   function onAccessChat(j) {
     try {
       const pick = {};
-      for (const [k, v] of Object.entries(j || {})) if (/endpoint|url|room|channel|protocol|type/i.test(k) && typeof v !== "object") pick[k] = String(v).split("?")[0].slice(0, 200);
+      for (const [k, v] of Object.entries(j || {})) if (!/token|key|signature/i.test(k)) pick[k] = shape(v);
       diag.chat = { keys: Object.keys(j || {}), ...pick };
       const rid = j && (j.room_id || j.roomId || j.room);
       joinedHint = (typeof rid === "string" && /^[A-Za-z0-9_-]{6,40}$/.test(rid)) ? rid : (spaceFromUrl() || lastMetaKey);
@@ -147,38 +159,139 @@
     } catch { /* ignore */ }
   }
 
-  const nativeFetch = window.fetch;
-  window.fetch = function (input) {
-    const p = nativeFetch.apply(this, arguments);
+  // Long-running responses (live event streams): read a copy as it arrives and look for reactions.
+  const STREAMY = /live_pipeline|subscri|stream|events|pubsub|realtime|chat|livechat|LiveChat|broadcast|guest/i;
+  function tapStream(resp, label) {
     try {
-      const url = typeof input === "string" ? input : input && input.url;
-      if (url) trackHttp(url);
-      if (url && /accessChat/i.test(url)) p.then((r) => r.clone().json()).then(onAccessChat).catch(() => {});
-      if (url && SPACE_API.test(url)) p.then((r) => r.clone().json()).then(learn).catch(() => {});
-    } catch { /* never break the page */ }
-    return p;
-  };
+      if (!resp || !resp.ok || !resp.body) return;
+      const ct = (resp.headers && resp.headers.get("content-type")) || "";
+      if (/image|audio|video|octet-stream|javascript|css|font/i.test(ct)) return;
+      const reader = resp.clone().body.getReader();
+      const d = new TextDecoder();
+      let buf = "", total = 0;
+      diag.streams.push(label + " " + (ct.split(";")[0] || "?"));
+      if (diag.streams.length > 30) diag.streams.shift();
+      (function pump() {
+        reader.read().then(({ done, value }) => {
+          if (done) { if (buf.trim()) streamLine(buf, label); return; }
+          total += value ? value.byteLength : 0;
+          if (total > 50e6) { reader.cancel().catch(() => {}); return; }
+          buf += d.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf("\n")) >= 0) { streamLine(buf.slice(0, i), label); buf = buf.slice(i + 1); }
+          if (buf.length > 200000) { streamLine(buf, label); buf = ""; }
+          pump();
+        }).catch(() => {});
+      })();
+    } catch { /* ignore */ }
+  }
+  function streamLine(line, label) {
+    let t = line.trim();
+    if (!t) return;
+    if (t.startsWith("data:")) t = t.slice(5).trim();
+    if (!(t[0] === "{" || t[0] === "[")) return;
+    sample(diag.streamSamples, "in:" + label, t, 40);
+    onFrame(t, "http");
+  }
 
-  const xOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function (method, url) {
+  // Your own reactions now go out through an X request; read the emoji from it (never the auth).
+  function outgoingFromRequest(url, body) {
     try {
-      if (url) trackHttp(url);
-      if (url && /accessChat/i.test(String(url))) {
-        this.addEventListener("load", () => {
-          try { onAccessChat(this.responseType === "json" ? this.response : safe(this.responseText)); } catch { /* ignore */ }
-        });
-      }
-      if (url && SPACE_API.test(String(url))) {
-        this.addEventListener("load", () => {
-          try {
-            const body = this.responseType === "json" ? this.response : (this.responseType === "" || this.responseType === "text") ? safe(this.responseText) : null;
-            if (body) learn(body);
-          } catch { /* ignore */ }
-        });
+      if (!/LiveChat|livechat|reaction|chat/i.test(url) || /accessChat|authorize|login|token/i.test(url) || body == null) return;
+      const text = typeof body === "string" ? body : null;
+      if (!text) return;
+      const j = safe(text);
+      const redacted = j ? JSON.stringify(j, (k, v) => (/token|key|signature|cookie|auth|secret|password/i.test(k) ? "[hidden]" : v)) : text.replace(/[A-Za-z0-9_\-]{32,}/g, "[hidden]");
+      sample(diag.sentSamples, "out:" + String(url).split("?")[0].split("/").pop(), redacted, 8);
+      const emoji = state.room && (outgoingReaction(text) || outgoingDeep(text) || shortEmoji(safe(text)));
+      if (emoji) {
+        const me = self();
+        selfSent.push({ emoji, ts: Date.now() }); if (selfSent.length > 50) selfSent.shift();
+        addReaction({ ts: Date.now(), emoji, username: me.username, displayName: me.displayName, userId: me.id });
+        render();
       }
     } catch { /* ignore */ }
-    return xOpen.apply(this, arguments);
-  };
+  }
+  function shortEmoji(o) {
+    let e = null, budget = 200;
+    (function walk(x, depth) {
+      if (e || depth > 6 || --budget < 0 || !x) return;
+      if (typeof x === "string") { if (x.length > 1 && (x[0] === "{" || x[0] === "[")) walk(safe(x), depth + 1); return; }
+      if (typeof x !== "object") return;
+      for (const [k, v] of Object.entries(x)) {
+        if (typeof v === "string" && /^(body|text|emoji|reaction|message|content)$/i.test(k) && v.length <= 16 && EMOJI_ISH.test(v)) { e = v; return; }
+      }
+      for (const k in x) walk(x[k], depth + 1);
+    })(o, 0);
+    return e;
+  }
+
+  function wrapFetch(win, where) {
+    const nf = win.fetch;
+    if (!nf || nf.__ti) return;
+    const wrapped = function (input, init) {
+      const p = nf.apply(this, arguments);
+      try {
+        const url = typeof input === "string" ? input : input && input.url;
+        if (url) {
+          trackHttp(url, where);
+          if (init && init.body) outgoingFromRequest(url, init.body);
+          if (/accessChat/i.test(url)) p.then((r) => r.clone().json()).then(onAccessChat).catch(() => {});
+          else if (SPACE_API.test(url)) p.then((r) => r.clone().json()).then(learn).catch(() => {});
+          if (STREAMY.test(String(url).split("?")[0]) && !/accessChat|AudioSpaceById/i.test(url)) p.then((r) => tapStream(r, (where ? where + " " : "") + String(url).split("?")[0].split("/").slice(-2).join("/"))).catch(() => {});
+        }
+      } catch { /* never break the page */ }
+      return p;
+    };
+    try { Object.defineProperty(wrapped, "__ti", { value: true }); } catch { /* ignore */ }
+    looksNative(wrapped, "fetch");
+    win.fetch = wrapped;
+  }
+
+  function wrapXhr(win, where) {
+    const X = win.XMLHttpRequest;
+    if (!X || X.prototype.open.__ti) return;
+    const xo = X.prototype.open, xs = X.prototype.send;
+    const open = function (method, url) {
+      try {
+        this.__tiUrl = String(url || "");
+        if (url) trackHttp(url, where);
+        if (url && /accessChat/i.test(String(url))) {
+          this.addEventListener("load", () => { try { onAccessChat(this.responseType === "json" ? this.response : safe(this.responseText)); } catch { /* ignore */ } });
+        } else if (url && SPACE_API.test(String(url))) {
+          this.addEventListener("load", () => {
+            try {
+              const body = this.responseType === "json" ? this.response : (this.responseType === "" || this.responseType === "text") ? safe(this.responseText) : null;
+              if (body) learn(body);
+            } catch { /* ignore */ }
+          });
+        } else if (url && STREAMY.test(String(url).split("?")[0])) {
+          let seen = 0;
+          const label = (where ? where + " " : "") + "xhr " + String(url).split("?")[0].split("/").slice(-2).join("/");
+          const read = () => {
+            try {
+              if (!(this.responseType === "" || this.responseType === "text")) return;
+              const t = this.responseText || "";
+              const chunk = t.slice(seen); seen = t.length;
+              for (const line of chunk.split("\n")) streamLine(line, label);
+            } catch { /* ignore */ }
+          };
+          this.addEventListener("progress", read);
+          this.addEventListener("load", read);
+        }
+      } catch { /* ignore */ }
+      return xo.apply(this, arguments);
+    };
+    const send = function (body) {
+      try { if (this.__tiUrl) outgoingFromRequest(this.__tiUrl, body); } catch { /* ignore */ }
+      return xs.apply(this, arguments);
+    };
+    try { Object.defineProperty(open, "__ti", { value: true }); } catch { /* ignore */ }
+    X.prototype.open = open; X.prototype.send = send;
+  }
+
+  wrapFetch(window, "");
+  wrapXhr(window, "");
 
   // ---------- chat frame parsing ----------
   function parse(raw) { return parseStd(raw) || parseDeep(raw); }
@@ -278,7 +391,7 @@
   // ---------- websocket hook ----------
   // X has moved the chat around before, so match the socket loosely and read text or binary frames.
   const CHAT_WS = /chatapi|chatnow|chatman|pscp\.tv|periscope/i;
-  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0 };
+  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [] };
   function note(dir, text) {
     diag.recent.push(dir + " " + String(text).slice(0, 700));
     if (diag.recent.length > 60) diag.recent.shift();
@@ -331,6 +444,8 @@
       Object.defineProperty(w, "__tiFrame", { value: true });
       diag.frames_++;
       installWs(w, "frame");
+      wrapFetch(w, "frame");
+      wrapXhr(w, "frame");
     } catch { /* cross-origin or gone */ }
   }
   try {
@@ -657,9 +772,9 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.11", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.12", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
-      http: httpSeen.filter((u) => !/\.(aac|m3u8|ts|mp4)$/.test(u)), sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
+      http: httpSeen, streams: diag.streams, fromStreams: diag.streamSamples, sent: diag.sentSamples, sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
       chat: diag.chat, joinedHint, hiddenFrames: diag.frames_, wmsgs: diag.wmsgs, fromWorkers: diag.wsamples, toWorkers: diag.wout,
       spaceOnPage: !!document.querySelector('[data-testid*="pace" i], [aria-label*="Space" i]'),
       knownIds: ids.size, unnamed: unresolvedSamples, recent: diag.recent.slice(-40),
