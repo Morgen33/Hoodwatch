@@ -51,9 +51,10 @@ function chatConnect(tabId, c) {
   ws.onclose = (e) => {
     if (c.ws === ws) c.ws = null;
     if (c.stopped) return;
+    c.codes = (c.codes || []).concat(e.code + (e.reason ? ":" + String(e.reason).slice(0, 60) : "")).slice(-6);
     chatStatus(tabId, "closed " + e.code + (e.reason ? " " + String(e.reason).slice(0, 80) : ""));
     if (c.tries < 6) { const wait = 2000 * Math.pow(2, c.tries++); c.timer = setTimeout(() => chatConnect(tabId, c), wait); }
-    else chatStatus(tabId, "gave up after 6 tries");
+    else chatStatus(tabId, "gave up after 6 tries (close codes: " + c.codes.join(", ") + ")");
   };
 }
 
@@ -66,8 +67,27 @@ function chatClose(tabId) {
 }
 chrome.tabs.onRemoved.addListener((tabId) => chatClose(tabId));
 
+// Ask X's chat server for messages since the last cursor (used when the page can't read the reply itself).
+async function chatPoll(tabId, { endpoint, token, cursor }) {
+  if (!CHAT_HOST.test(endpoint || "") || !token) return;
+  let out;
+  try {
+    const r = await fetch(endpoint.replace(/\/$/, "") + "/chatapi/v1/history", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ access_token: token, cursor: cursor || "", limit: 1000, quick_get: true }),
+    });
+    const json = await r.json().catch(() => null);
+    out = { status: r.status, json: r.ok ? json : null, error: r.ok ? null : "http " + r.status };
+  } catch (e) { out = { status: 0, error: String(e && e.message || e) }; }
+  chrome.tabs.sendMessage(tabId, { hw: true, type: "chathistory", data: out }).catch(() => {});
+}
+
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (!msg || !msg.hw || !msg.data || !msg.data.room) return;
+  if (msg.type === "chatpoll") {
+    if (sender.tab && sender.frameId === 0) chatPoll(sender.tab.id, msg.data);
+    return;
+  }
   if (msg.type === "chatopen" || msg.type === "chatclose") {
     if (sender.tab && sender.frameId === 0) msg.type === "chatopen" ? chatOpen(sender.tab.id, msg.data) : chatClose(sender.tab.id);
     return;

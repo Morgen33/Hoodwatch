@@ -6,6 +6,7 @@
 
   const TAG = "__hoodwatch__";
   const SUB = "__tappedin_sub__";
+  const plainFetch = window.fetch.bind(window); // untouched copy for polling X's chat history
   let IS_TOP = true; try { IS_TOP = window.top === window; } catch { IS_TOP = false; }
   const ALLOWED_SUB_ORIGIN = /^https:\/\/([a-z0-9-]+\.)*(pscp\.tv|periscope\.tv|x\.com|twitter\.com)$/i;
   function toTop(msg) { try { window.top.postMessage({ [SUB]: true, ...msg }, "*"); } catch { /* ignore */ } }
@@ -179,15 +180,72 @@
       // keep the background awake and let it reconnect if Chrome restarted it
       clearInterval(this.timer);
       this.timer = setInterval(() => { if (this.cfg) post("chatopen", this.cfg); }, 20000);
+      // and, in parallel, ask X's chat server for new messages every few seconds over a normal web request
+      this.joinedAt = Date.now(); this.cursor = ""; this.via = "page"; this.fails = 0;
+      clearTimeout(this.pollTimer); this.pollTimer = setTimeout(() => this.poll(), 1500);
+    },
+    async poll() {
+      const cfg = this.cfg;
+      if (!cfg) return;
+      if (diag.own.frames > 0 && /listening/.test(diag.own.status)) { diag.poll.status = "not needed: live connection works"; return; }
+      if (this.via === "background") { post("chatpoll", { ...cfg, cursor: this.cursor }); this.pollTimer = setTimeout(() => this.poll(), 3000); return; }
+      try {
+        const r = await plainFetch(cfg.endpoint.replace(/\/$/, "") + "/chatapi/v1/history", {
+          method: "POST", headers: { "content-type": "application/json" }, credentials: "omit",
+          body: JSON.stringify({ access_token: cfg.token, cursor: this.cursor, limit: 1000, quick_get: true }),
+        });
+        diag.poll.http = r.status; diag.poll.via = "page";
+        const j = await r.json().catch(() => null);
+        if (!r.ok || !j) throw new Error("http " + r.status);
+        this.fails = 0;
+        takeHistory(j, "poll");
+        if (typeof j.cursor === "string") this.cursor = j.cursor;
+      } catch (e) {
+        diag.poll.lastError = String(e && e.message || e).slice(0, 120);
+        // a blocked cross-site read: let the extension background do the request instead
+        if (++this.fails >= 2 && this.via === "page") { this.via = "background"; diag.poll.via = "background"; }
+      }
+      if (this.cfg === cfg) this.pollTimer = setTimeout(() => this.poll(), 3000);
     },
     stop(why) {
       clearInterval(this.timer); this.timer = null;
+      clearTimeout(this.pollTimer); this.pollTimer = null;
       if (this.cfg) post("chatclose", { room: this.cfg.room });
       this.cfg = null;
       if (why) diag.own.status = "stopped: " + why;
     },
     get ws() { return this.cfg; }, // truthy while active (used by the "X opened it itself" check)
   };
+
+  const seenMsgs = new Set();
+  function msgKey(m) { try { return typeof m === "string" ? m : (typeof m.payload === "string" ? m.payload : JSON.stringify(m)); } catch { return null; } }
+  function firstTime(k) {
+    if (!k) return true;
+    if (seenMsgs.has(k)) return false;
+    seenMsgs.add(k); if (seenMsgs.size > 20000) seenMsgs.clear();
+    return true;
+  }
+  function msgTime(m) { // ms, or null
+    try {
+      const p = safe(m.payload) || m; const b = safe(p && p.body) || {};
+      const t = Number(b.timestamp || p.timestamp || m.timestamp || 0);
+      return !t ? null : t > 1e14 ? Math.round(t / 1e6) : t > 1e11 ? t : t * 1000;
+    } catch { return null; }
+  }
+  function takeHistory(j, src) {
+    const list = Array.isArray(j) ? j : (j.messages || j.Messages || j.events || []);
+    if (!diag.poll.keys) diag.poll.keys = Array.isArray(j) ? ["(array)"] : Object.keys(j).slice(0, 12);
+    diag.poll.total += list.length;
+    for (const m of list) {
+      const k = msgKey(m);
+      if (!firstTime(k)) continue;
+      const t = msgTime(m);
+      if (t && ownChat.joinedAt && t < ownChat.joinedAt - 15000) continue; // only what happens after you joined
+      diag.poll.kept++;
+      if (!state.connected) { state.connected = true; render(); }
+      onFrame(typeof m === "string" ? m : JSON.stringify(m), src);
+    }
+  }
 
   // Long-running responses (live event streams): read a copy as it arrives and look for reactions.
   const STREAMY = /live_pipeline|subscri|stream|events|pubsub|realtime|chat|livechat|LiveChat|broadcast|guest/i;
@@ -423,7 +481,7 @@
   // ---------- websocket hook ----------
   // X has moved the chat around before, so match the socket loosely and read text or binary frames.
   const CHAT_WS = /chatapi|chatnow|chatman|pscp\.tv|periscope/i;
-  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [], subframes: [], own: { status: "idle", opens: 0, frames: 0 } };
+  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [], subframes: [], own: { status: "idle", opens: 0, frames: 0 }, poll: { via: null, http: null, keys: null, total: 0, kept: 0, lastError: null } };
   function note(dir, text) {
     diag.recent.push(dir + " " + String(text).slice(0, 700));
     if (diag.recent.length > 60) diag.recent.shift();
@@ -751,8 +809,19 @@
 
   window.addEventListener("message", (e) => {
     if (e.source !== window || !e.data || !e.data[TAG] || e.data.dir !== "in") return;
-    if (e.data.type === "chatframe" && ownChat.cfg) { diag.own.frames++; if (!state.connected) { state.connected = true; render(); } onFrame(String(e.data.data || ""), "own"); return; }
-    if (e.data.type === "chatstatus") { diag.own.status = String(e.data.data || "").slice(0, 160); if (/^closed|^gave up/.test(diag.own.status) && state.connected && !diag.hooked) { state.connected = false; render(); } return; }
+    if (e.data.type === "chatframe" && ownChat.cfg) {
+      const t = String(e.data.data || ""); const m = safe(t);
+      if (!firstTime(m ? msgKey(m) : t)) return;
+      diag.own.frames++; if (!state.connected) { state.connected = true; render(); }
+      onFrame(t, "own"); return;
+    }
+    if (e.data.type === "chathistory" && ownChat.cfg) {
+      const d = e.data.data || {};
+      diag.poll.http = d.status; if (d.error) diag.poll.lastError = String(d.error).slice(0, 120);
+      if (d.json) { takeHistory(d.json, "poll"); if (typeof d.json.cursor === "string") ownChat.cursor = d.json.cursor; }
+      return;
+    }
+    if (e.data.type === "chatstatus") { diag.own.status = String(e.data.data || "").slice(0, 160); if (/^closed|^gave up/.test(diag.own.status) && state.connected && !diag.hooked && !ownChat.cfg) { state.connected = false; render(); } return; }
     if (e.data.type === "sync") { state.sync = e.data.data; render(); }
   });
 
@@ -829,10 +898,10 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.15", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.16", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
       http: httpSeen, streams: diag.streams, fromStreams: diag.streamSamples, sent: diag.sentSamples, sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
-      chat: diag.chat, ownChat: diag.own, joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
+      chat: diag.chat, ownChat: diag.own, poll: diag.poll, joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
       iframes: [...document.querySelectorAll("iframe")].slice(0, 20).map((f) => (f.getAttribute("src") || "(no src)").split("?")[0].slice(0, 150) + (f.getAttribute("sandbox") != null ? " [sandbox]" : "")), wmsgs: diag.wmsgs, fromWorkers: diag.wsamples, toWorkers: diag.wout,
       spaceOnPage: !!document.querySelector('[data-testid*="pace" i], [aria-label*="Space" i]'),
       knownIds: ids.size, unnamed: unresolvedSamples, recent: diag.recent.slice(-40),

@@ -40,6 +40,7 @@ Records emoji reactions and listener counts in X Spaces the user is listening to
 ## Permission justifications
 - **storage**: saves the user's Tapped In key locally.
 - **host permission (supabase.co)**: sends the Space's reactions to the user's Tapped In account.
+- **host permission (pscp.tv)**: X's own Spaces chat servers. Lets the extension read the Space's chat (reactions) with the chat access X issued to the signed-in user, when x.com's page can't. Read-only.
 - **content script on x.com / twitter.com (and X's own Spaces domains pscp.tv / periscope.tv, inside X's embedded frames)**: reads Space reaction events while the user is in a Space. Read-only; never sends anything. When X's page doesn't open the Space chat itself, the extension's background opens the same read-only chat connection using the chat access X already issued to the signed-in user, and only listens.
 
 ## Data usage disclosures (tick these)
