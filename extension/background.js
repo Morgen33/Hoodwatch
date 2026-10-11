@@ -12,8 +12,66 @@ function buf(room) {
   return buffers.get(room);
 }
 
+// ---------- read-only Space chat connection ----------
+// x.com's page is no longer allowed to connect to X's chat servers, so the extension does it here with the chat
+// pass X issued to the signed-in user. It authenticates, joins the room and only listens; frames go to the tab.
+const chats = new Map(); // tabId -> { ws, room, endpoint, token, tries, timer, stopped }
+const CHAT_HOST = /^https:\/\/[a-z0-9.-]+\.pscp\.tv\/?$/i;
+
+function chatStatus(tabId, text) { chrome.tabs.sendMessage(tabId, { hw: true, type: "chatstatus", data: text }).catch(() => {}); }
+
+function chatOpen(tabId, { endpoint, token, room }) {
+  if (!CHAT_HOST.test(endpoint || "") || !token || !room) return;
+  const cur = chats.get(tabId);
+  if (cur && !cur.stopped && cur.room === room) { cur.token = token; return; } // already on it
+  chatClose(tabId);
+  const c = { room, endpoint, token, tries: 0, timer: null, stopped: false, ws: null };
+  chats.set(tabId, c);
+  chatConnect(tabId, c);
+}
+
+function chatConnect(tabId, c) {
+  if (c.stopped) return;
+  const url = c.endpoint.replace(/^https:/i, "wss:").replace(/\/$/, "") + "/chatapi/v1/chatnow";
+  let ws;
+  try { ws = new WebSocket(url); } catch (e) { chatStatus(tabId, "blocked: " + String(e && e.message || e).slice(0, 120)); return; }
+  c.ws = ws;
+  chatStatus(tabId, "connecting");
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ payload: JSON.stringify({ access_token: c.token }), kind: 3 }));
+    ws.send(JSON.stringify({ payload: JSON.stringify({ body: JSON.stringify({ room: c.room }), kind: 1 }), kind: 2 }));
+    c.tries = 0;
+    chatStatus(tabId, "listening");
+  };
+  ws.onmessage = async (e) => {
+    let t = e.data;
+    if (typeof t !== "string") { try { t = typeof t.text === "function" ? await t.text() : new TextDecoder().decode(t); } catch { return; } }
+    chrome.tabs.sendMessage(tabId, { hw: true, type: "chatframe", data: t }).catch(() => chatClose(tabId));
+  };
+  ws.onclose = (e) => {
+    if (c.ws === ws) c.ws = null;
+    if (c.stopped) return;
+    chatStatus(tabId, "closed " + e.code + (e.reason ? " " + String(e.reason).slice(0, 80) : ""));
+    if (c.tries < 6) { const wait = 2000 * Math.pow(2, c.tries++); c.timer = setTimeout(() => chatConnect(tabId, c), wait); }
+    else chatStatus(tabId, "gave up after 6 tries");
+  };
+}
+
+function chatClose(tabId) {
+  const c = chats.get(tabId);
+  if (!c) return;
+  c.stopped = true; clearTimeout(c.timer);
+  if (c.ws) { try { c.ws.close(1000, "done"); } catch { /* ignore */ } }
+  chats.delete(tabId);
+}
+chrome.tabs.onRemoved.addListener((tabId) => chatClose(tabId));
+
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (!msg || !msg.hw || !msg.data || !msg.data.room) return;
+  if (msg.type === "chatopen" || msg.type === "chatclose") {
+    if (sender.tab && sender.frameId === 0) msg.type === "chatopen" ? chatOpen(sender.tab.id, msg.data) : chatClose(sender.tab.id);
+    return;
+  }
   const b = buf(msg.data.room);
   if (sender.tab) b.tabs.add(sender.tab.id);
   const { room: _room, ...d } = msg.data;

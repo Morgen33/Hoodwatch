@@ -6,7 +6,6 @@
 
   const TAG = "__hoodwatch__";
   const SUB = "__tappedin_sub__";
-  const PlainWS = window.WebSocket; // untouched copy for Tapped In's own read-only chat connection
   let IS_TOP = true; try { IS_TOP = window.top === window; } catch { IS_TOP = false; }
   const ALLOWED_SUB_ORIGIN = /^https:\/\/([a-z0-9-]+\.)*(pscp\.tv|periscope\.tv|x\.com|twitter\.com)$/i;
   function toTop(msg) { try { window.top.postMessage({ [SUB]: true, ...msg }, "*"); } catch { /* ignore */ } }
@@ -165,53 +164,29 @@
     } catch { /* ignore */ }
   }
 
-  // X's page stopped opening the Space chat itself (Oct 2026), but it still hands the browser a chat pass.
-  // Tapped In uses that pass to open the same read-only chat connection X's app used to: it authenticates,
-  // joins the room and only listens. It never sends a message, reaction or anything else into the Space.
+  // X's page no longer opens the Space chat itself: x.com's security rules now block the page from connecting to
+  // X's chat servers. X still hands the browser a chat pass, so the extension's background process (which those
+  // page rules don't cover) opens the same read-only chat connection X's app used to: it authenticates, joins the
+  // room and only listens. Nothing is ever sent into the Space. Frames come back here for the normal parsing.
   const ownChat = {
-    ws: null, room: null, token: null, endpoint: null, tries: 0, timer: null, stopped: true,
+    cfg: null, timer: null,
     start(endpoint, token, room) {
       if (!/^https:\/\/[a-z0-9.-]+\.pscp\.tv\/?$/i.test(endpoint) || !room) { diag.own.status = "skipped: unexpected endpoint"; return; }
-      if (this.room === room && this.ws && this.ws.readyState <= 1) { this.token = token; return; }
-      this.stop("switch");
-      Object.assign(this, { endpoint, token, room, tries: 0, stopped: false });
-      this.connect();
-    },
-    connect() {
-      if (this.stopped) return;
       if (diag.hooked > 0) { diag.own.status = "not needed: X opened the chat itself"; return; }
-      const url = this.endpoint.replace(/^https:/i, "wss:").replace(/\/$/, "") + "/chatapi/v1/chatnow";
-      let ws;
-      try { ws = new PlainWS(url); } catch (e) { diag.own.status = "blocked: " + String(e && e.message || e).slice(0, 120); return; }
-      this.ws = ws; diag.own.status = "connecting"; diag.own.opens++;
-      ws.addEventListener("open", () => {
-        try {
-          ws.send(JSON.stringify({ payload: JSON.stringify({ access_token: this.token }), kind: 3 }));
-          ws.send(JSON.stringify({ payload: JSON.stringify({ body: JSON.stringify({ room: this.room }), kind: 1 }), kind: 2 }));
-          diag.own.status = "listening"; this.tries = 0;
-          state.connected = true; render();
-        } catch { /* ignore */ }
-      });
-      ws.addEventListener("message", (e) => {
-        diag.own.frames++;
-        const t = toText(e.data);
-        if (typeof t === "string") onFrame(t, "own"); else if (t) t.then((x) => onFrame(x, "own"), () => {});
-      });
-      ws.addEventListener("close", (e) => {
-        diag.own.status = "closed " + e.code + (e.reason ? " " + String(e.reason).slice(0, 80) : "");
-        if (this.ws === ws) this.ws = null;
-        if (!this.stopped && this.tries < 6) { const wait = 2000 * Math.pow(2, this.tries++); this.timer = setTimeout(() => this.connect(), wait); }
-        else if (!this.stopped) { state.connected = false; render(); }
-      });
-      ws.addEventListener("error", () => { diag.own.status = "error"; });
+      this.cfg = { endpoint, token, room };
+      diag.own.status = "asking extension to connect"; diag.own.opens++;
+      post("chatopen", this.cfg);
+      // keep the background awake and let it reconnect if Chrome restarted it
+      clearInterval(this.timer);
+      this.timer = setInterval(() => { if (this.cfg) post("chatopen", this.cfg); }, 20000);
     },
     stop(why) {
-      this.stopped = true;
-      clearTimeout(this.timer);
-      if (this.ws) { try { this.ws.close(1000, why || "done"); } catch { /* ignore */ } }
-      this.ws = null; this.token = null;
+      clearInterval(this.timer); this.timer = null;
+      if (this.cfg) post("chatclose", { room: this.cfg.room });
+      this.cfg = null;
       if (why) diag.own.status = "stopped: " + why;
     },
+    get ws() { return this.cfg; }, // truthy while active (used by the "X opened it itself" check)
   };
 
   // Long-running responses (live event streams): read a copy as it arrives and look for reactions.
@@ -776,6 +751,8 @@
 
   window.addEventListener("message", (e) => {
     if (e.source !== window || !e.data || !e.data[TAG] || e.data.dir !== "in") return;
+    if (e.data.type === "chatframe" && ownChat.cfg) { diag.own.frames++; if (!state.connected) { state.connected = true; render(); } onFrame(String(e.data.data || ""), "own"); return; }
+    if (e.data.type === "chatstatus") { diag.own.status = String(e.data.data || "").slice(0, 160); if (/^closed|^gave up/.test(diag.own.status) && state.connected && !diag.hooked) { state.connected = false; render(); } return; }
     if (e.data.type === "sync") { state.sync = e.data.data; render(); }
   });
 
@@ -852,7 +829,7 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.14", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.15", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
       http: httpSeen, streams: diag.streams, fromStreams: diag.streamSamples, sent: diag.sentSamples, sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
       chat: diag.chat, ownChat: diag.own, joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
