@@ -339,6 +339,7 @@
           if (/accessChat/i.test(url)) p.then((r) => r.clone().json()).then(onAccessChat).catch(() => {});
           if (VIEWER_URL.test(String(url).split("?")[0])) p.then((r) => r.clone().json()).then(onViewer).catch(() => {});
           else if (SPACE_API.test(url)) p.then((r) => r.clone().json()).then(learn).catch(() => {});
+          if (/\.(aac|ts)(\?|$)/i.test(url)) p.then((r) => r.clone().arrayBuffer()).then((b) => audioChunk(new Uint8Array(b), "fetch")).catch(() => {});
           if (STREAMY.test(String(url).split("?")[0]) && !/accessChat|AudioSpaceById/i.test(url)) p.then((r) => tapStream(r, (where ? where + " " : "") + String(url).split("?")[0].split("/").slice(-2).join("/"))).catch(() => {});
         }
       } catch { /* never break the page */ }
@@ -358,6 +359,11 @@
         this.__tiUrl = String(url || "");
         if (url) trackHttp(url, where);
         if (url && /stopWatching/i.test(String(url)) && IS_TOP) { ownChat.stop("left the Space"); state.connected = false; if (state.room) post("leave", { room: state.room }); render(); }
+        if (url && /\.(aac|ts)(\?|$)/i.test(String(url))) {
+          this.addEventListener("load", () => {
+            try { const r = this.response; const u8 = bytesOf(r); if (u8 && typeof u8.then !== "function") audioChunk(u8, "xhr"); else if (u8) u8.then((x) => audioChunk(x, "xhr")); } catch { /* ignore */ }
+          });
+        }
         if (url && VIEWER_URL.test(String(url).split("?")[0])) {
           this.addEventListener("load", () => { try { onViewer(this.responseType === "json" ? this.response : safe(this.responseText)); } catch { /* ignore */ } });
         }
@@ -496,7 +502,7 @@
   // ---------- websocket hook ----------
   // X has moved the chat around before, so match the socket loosely and read text or binary frames.
   const CHAT_WS = /chatapi|chatnow|chatman|pscp\.tv|periscope/i;
-  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [], subframes: [], own: { status: "idle", opens: 0, frames: 0 }, poll: { via: null, http: null, keys: null, total: 0, kept: 0, baseline: 0, rounds: 0, lastError: null, samples: [] } };
+  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [], subframes: [], own: { status: "idle", opens: 0, frames: 0 }, binSamples: [], dcMsgs: 0, id3: { chunks: 0, frames: 0, samples: [] }, poll: { via: null, http: null, keys: null, total: 0, kept: 0, baseline: 0, rounds: 0, lastError: null, samples: [] } };
   function note(dir, text) {
     diag.recent.push(dir + " " + String(text).slice(0, 700));
     if (diag.recent.length > 60) diag.recent.shift();
@@ -606,12 +612,100 @@
     }
   } catch { /* ignore */ }
 
+  // ---------- binary / embedded data (X's side channels and the audio stream) ----------
+  function bytesOf(d) { // Uint8Array, Promise<Uint8Array> (Blob) or null
+    try {
+      const tag = Object.prototype.toString.call(d);
+      if (tag === "[object ArrayBuffer]") return new Uint8Array(d);
+      if (ArrayBuffer.isView(d)) return new Uint8Array(d.buffer, d.byteOffset, d.byteLength);
+      if (tag === "[object Blob]" && typeof d.arrayBuffer === "function") return d.arrayBuffer().then((b) => new Uint8Array(b));
+      if (typeof d === "string") return new TextEncoder().encode(d);
+    } catch { /* ignore */ }
+    return null;
+  }
+  function previewBytes(u8) {
+    let printable = 0; const n = Math.min(u8.length, 400);
+    for (let i = 0; i < n; i++) { const c = u8[i]; if ((c >= 32 && c < 127) || c === 10 || c === 13 || c >= 0xc2) printable++; }
+    if (n && printable / n > 0.85) return "text " + new TextDecoder().decode(u8.subarray(0, 300));
+    let hex = ""; for (let i = 0; i < Math.min(u8.length, 48); i++) hex += u8[i].toString(16).padStart(2, "0");
+    const strs = (new TextDecoder("latin1").decode(u8.subarray(0, 2000)).match(/[\x20-\x7e]{6,}/g) || []).slice(0, 6).join(" | ");
+    return "hex " + hex + (strs ? " strings: " + strs.slice(0, 250) : "");
+  }
+  // pull {...} JSON objects out of any text (e.g. JSON wrapped inside a binary message)
+  function extractJsons(text, max) {
+    const out = []; let i = 0; max = max || 20;
+    while (out.length < max && (i = text.indexOf("{", i)) >= 0) {
+      let depth = 0, inStr = false, esc = false, j = i;
+      for (; j < text.length && j - i < 50000; j++) {
+        const c = text[j];
+        if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
+        if (c === '"') inStr = true; else if (c === "{") depth++; else if (c === "}") { if (--depth === 0) break; }
+      }
+      if (depth === 0 && j < text.length) { const o = safe(text.slice(i, j + 1)); if (o && typeof o === "object") { out.push(o); i = j + 1; continue; } }
+      i++;
+    }
+    return out;
+  }
+  const binSeen = { n: 0 };
+  function binaryFrame(u8, src, label) {
+    try {
+      binSeen.n++;
+      const text = new TextDecoder().decode(u8);
+      const trimmed = text.trim();
+      const jsons = (trimmed[0] === "{" || trimmed[0] === "[") && safe(trimmed) ? [safe(trimmed)] : extractJsons(text);
+      if (diag.binSamples.length < 25) {
+        const smp = src + " " + (label || "") + " " + u8.length + "B json:" + jsons.length + " " + previewBytes(u8).slice(0, 400);
+        diag.binSamples.push(smp);
+        if (!IS_TOP) toTop({ note: "sample " + smp.slice(0, 190) });
+      }
+      for (const o of jsons) {
+        let ev = null; try { ev = parse(JSON.stringify(o)); } catch { ev = null; }
+        if (ev) handle(ev, src);
+      }
+    } catch { /* ignore */ }
+  }
+  // HLS audio chunks can carry ID3 tags with timed data (captions, events). Read their text.
+  function id3Texts(u8) {
+    const out = [];
+    try {
+      let off = 0;
+      while (off + 10 <= u8.length && u8[off] === 0x49 && u8[off + 1] === 0x44 && u8[off + 2] === 0x33) { // "ID3"
+        const ver = u8[off + 3];
+        const size = (u8[off + 6] << 21) | (u8[off + 7] << 14) | (u8[off + 8] << 7) | u8[off + 9];
+        let p = off + 10; const end = Math.min(u8.length, off + 10 + size);
+        while (p + 10 <= end) {
+          const id = String.fromCharCode(u8[p], u8[p + 1], u8[p + 2], u8[p + 3]);
+          if (!/^[A-Z0-9]{4}$/.test(id)) break;
+          const fsz = ver >= 4 ? ((u8[p + 4] << 21) | (u8[p + 5] << 14) | (u8[p + 6] << 7) | u8[p + 7]) : ((u8[p + 4] << 24) | (u8[p + 5] << 16) | (u8[p + 6] << 8) | u8[p + 7]);
+          const body = u8.subarray(p + 10, Math.min(end, p + 10 + fsz));
+          out.push({ id, body });
+          p += 10 + fsz;
+        }
+        off = end;
+      }
+    } catch { /* ignore */ }
+    return out;
+  }
+  function audioChunk(u8, label) {
+    const frames = id3Texts(u8);
+    diag.id3.chunks++;
+    for (const f of frames) {
+      diag.id3.frames++;
+      const text = new TextDecoder().decode(f.body).replace(/\u0000/g, " ");
+      if (diag.id3.samples.length < 12 && !diag.id3.samples.some((x) => x.startsWith(f.id + " " + text.slice(0, 30)))) diag.id3.samples.push(f.id + " " + text.slice(0, 300));
+      if (/[{]/.test(text)) binaryFrame(f.body, "id3", f.id);
+    }
+  }
+
   function watchChannel(ch) {
     try {
       if (diag.channels.length < 20) diag.channels.push(ch.label || "(no label)");
+      if (!IS_TOP) toTop({ note: "datachannel " + (ch.label || "(no label)") });
       ch.addEventListener("message", (e) => {
-        const t = toText(e.data);
-        if (typeof t === "string") onFrame(t, "dc"); else if (t) t.then((x) => onFrame(x, "dc"), () => {});
+        diag.dcMsgs++;
+        const b = bytesOf(e.data);
+        if (b && typeof b.then === "function") b.then((u8) => binaryFrame(u8, "dc", ch.label), () => {});
+        else if (b) binaryFrame(b, "dc", ch.label);
       });
     } catch { /* ignore */ }
   }
@@ -709,7 +803,10 @@
     const names = [...ids].map(([userId, v]) => ({ userId, username: v.username, displayName: v.displayName }));
     if (names.length) post("names", { room: r, names: names.slice(-2000) });
     render();
+    // anything that arrived a moment before we knew which Space this is
+    const held = pendingEvents.splice(0); for (const [ev, src] of held) handle(ev, src);
   }
+  const pendingEvents = [];
 
   function hook(ws) {
     diag.hooked++;
@@ -759,7 +856,7 @@
     diag.parsed++;
     if (src && !state.connected) { state.connected = true; ui(); }
     if (!state.room) joinRoom(spaceFromUrl() || joinedHint || lastMetaKey); // X didn't announce the room: use the Space we're on
-    if (!state.room) return;
+    if (!state.room) { if (pendingEvents.length < 500) pendingEvents.push([ev, src]); return; } // hold until we know the Space
     if (ev.kind === "reaction") {
       // if X ever echoes our own reaction back, don't count it twice
       const me = self();
@@ -837,7 +934,7 @@
   if (IS_TOP) window.addEventListener("message", (e) => {
     try {
       if (!e.data || !e.data[SUB] || e.source === window || !ALLOWED_SUB_ORIGIN.test(e.origin)) return;
-      if (e.data.note) { if (diag.subframes.length < 30) diag.subframes.push(e.origin + " " + String(e.data.note).slice(0, 200)); return; }
+      if (e.data.note) { if (diag.subframes.length < 60) diag.subframes.push(e.origin + " " + String(e.data.note).slice(0, 200)); return; }
       if (e.data.ev && (e.data.ev.kind === "reaction" || e.data.ev.kind === "occupancy")) handle(e.data.ev, "subframe");
     } catch { /* ignore */ }
   });
@@ -934,10 +1031,10 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.18", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.19", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
       http: httpSeen, streams: diag.streams, fromStreams: diag.streamSamples, sent: diag.sentSamples, sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
-      chat: diag.chat, ownChat: diag.own, poll: diag.poll, me: (() => { const m = self(); return m.username ? "@" + m.username : (m.id ? "id " + m.id : null); })(), meFrom: viewerMe ? "x viewer" : "cookie", joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
+      chat: diag.chat, ownChat: diag.own, poll: { ...diag.poll, samples: diag.poll.samples.filter((x) => x.bt !== 40 && x.bt !== 45).slice(0, 15) }, dcMsgs: diag.dcMsgs, binSamples: diag.binSamples, audio: diag.id3, me: (() => { const m = self(); return m.username ? "@" + m.username : (m.id ? "id " + m.id : null); })(), meFrom: viewerMe ? "x viewer" : "cookie", joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
       iframes: [...document.querySelectorAll("iframe")].slice(0, 20).map((f) => (f.getAttribute("src") || "(no src)").split("?")[0].slice(0, 150) + (f.getAttribute("sandbox") != null ? " [sandbox]" : "")), wmsgs: diag.wmsgs, fromWorkers: diag.wsamples, toWorkers: diag.wout,
       spaceOnPage: !!document.querySelector('[data-testid*="pace" i], [aria-label*="Space" i]'),
       knownIds: ids.size, unnamed: unresolvedSamples, recent: diag.recent.slice(-40),

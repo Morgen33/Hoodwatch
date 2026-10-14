@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Tapped In",
-  "version": "1.18.0",
+  "version": "1.19.0",
   "description": "See who's reacting in your X Spaces. Syncs reactions to your Tapped In dashboard.",
   "permissions": [
     "storage"
