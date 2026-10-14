@@ -313,6 +313,7 @@
     if (!t) return;
     if (t.startsWith("data:")) t = t.slice(5).trim();
     if (!(t[0] === "{" || t[0] === "[")) return;
+    try { const o = safe(t); if (o && o.topic) { const top = String(o.topic).replace(/\d{6,}/g, "#"); diag.topics[top] = (diag.topics[top] || 0) + 1; } } catch { /* ignore */ }
     sample(diag.streamSamples, "in:" + label, t, 40);
     onFrame(t, "http");
   }
@@ -320,6 +321,9 @@
   // Your own reactions now go out through an X request; read the emoji from it (never the auth).
   function outgoingFromRequest(url, body) {
     try {
+      if (/live_pipeline\/update_subscriptions/i.test(url) && typeof body === "string" && diag.subs.length < 10) {
+        diag.subs.push(decodeURIComponent(body).replace(/\d{6,}/g, "#").slice(0, 300));
+      }
       if (!/LiveChat|livechat|reaction|chat/i.test(url) || /accessChat|authorize|login|token/i.test(url) || body == null) return;
       const text = typeof body === "string" ? body : null;
       if (!text) return;
@@ -466,25 +470,40 @@
 
   // Fallback: dig through nested JSON (strings inside strings) for a reaction-shaped object.
   const EMOJI_ISH = /[^\x00-\x7F]/;
+  // Pull a person out of the many shapes X uses: {username,...}, {screen_name,...}, {user_results:{result:{core:{screen_name}}}}
+  function personOf(x) {
+    if (!x || typeof x !== "object") return null;
+    const r = (x.user_results && x.user_results.result) || (x.user && x.user.user_results && x.user.user_results.result) || null;
+    const username = x.username || x.screen_name || x.handle || x.twitter_screen_name || (r && ((r.core && r.core.screen_name) || (r.legacy && r.legacy.screen_name))) || null;
+    const displayName = x.display_name || x.displayName || x.name || (r && ((r.core && r.core.name) || (r.legacy && r.legacy.name))) || null;
+    const id = x.twitter_id || x.rest_id || x.user_id || x.userId || x.id_str || (r && r.rest_id) || null;
+    return (username || id) ? { username, displayName, id: id != null ? String(id) : null } : null;
+  }
   function parseDeep(raw) {
-    let found = null, sender = null, budget = 400;
+    let found = null, emoji = null, sender = null, budget = 500;
     (function walk(o, depth, from) {
-      if (found || depth > 7 || --budget < 0) return;
+      if (found || depth > 8 || --budget < 0) return;
       if (typeof o === "string") { if (o.length > 1 && (o[0] === "{" || o[0] === "[")) walk(safe(o), depth + 1, from); return; }
       if (!o || typeof o !== "object") return;
-      const snd = (o.sender && typeof o.sender === "object") ? o.sender : from;
-      if (o.type === 2 && typeof o.body === "string" && o.body.length <= 16 && EMOJI_ISH.test(o.body)) { found = o; sender = snd; return; }
+      const here = personOf(o.sender) || personOf(o.user) || personOf(o.author) || personOf(o.from) || (o.user_results ? personOf(o) : null);
+      const snd = here || from;
+      // classic chat frame: { type: 2, body: "🔥" }
+      if (o.type === 2 && typeof o.body === "string" && o.body.length <= 16 && EMOJI_ISH.test(o.body)) { found = o; emoji = o.body; sender = snd || personOf(o); return; }
+      // X's newer live chat (same shape it uses to send): { chat_type: 2, message: "🔥" }
+      const ct = o.chat_type != null ? o.chat_type : o.chatType;
+      const msgText = typeof o.message === "string" ? o.message : typeof o.text === "string" ? o.text : typeof o.body === "string" ? o.body : null;
+      if ((ct === 2 || ct === "2" || ct === "Reaction" || ct === "REACTION") && msgText && msgText.length <= 16 && EMOJI_ISH.test(msgText)) { found = o; emoji = msgText; sender = snd || personOf(o); return; }
       for (const k in o) walk(o[k], depth + 1, snd);
     })(raw, 0, null);
     if (!found) return occupancyDeep(raw);
     const s = sender || {};
-    const known = lookup(s.twitter_id, s.user_id, found.remoteID, found.twitter_id, found.user_id);
+    const known = lookup(s.id, found.remoteID, found.twitter_id, found.user_id);
     return { kind: "reaction", r: {
       ts: Date.now(),
-      emoji: found.body.slice(0, 32),
+      emoji: String(emoji).slice(0, 32),
       username: s.username || found.username || (known && known.username) || null,
-      displayName: s.display_name || found.displayName || (known && known.displayName) || null,
-      userId: String(s.twitter_id || s.user_id || found.remoteID || found.twitter_id || found.user_id || "") || null,
+      displayName: s.displayName || found.displayName || (known && known.displayName) || null,
+      userId: String(s.id || found.remoteID || found.twitter_id || found.user_id || "") || null,
     } };
   }
 
@@ -526,7 +545,7 @@
   // ---------- websocket hook ----------
   // X has moved the chat around before, so match the socket loosely and read text or binary frames.
   const CHAT_WS = /chatapi|chatnow|chatman|pscp\.tv|periscope/i;
-  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [], subframes: [], own: { status: "idle", opens: 0, frames: 0 }, binSamples: [], dcMsgs: 0, id3: { chunks: 0, frames: 0, samples: [] }, poll: { via: null, http: null, keys: null, total: 0, kept: 0, baseline: 0, rounds: 0, lastError: null, samples: [] } };
+  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [], subframes: [], own: { status: "idle", opens: 0, frames: 0 }, binSamples: [], dcMsgs: 0, topics: {}, subs: [], id3: { chunks: 0, frames: 0, samples: [] }, poll: { via: null, http: null, keys: null, total: 0, kept: 0, baseline: 0, rounds: 0, lastError: null, samples: [] } };
   function note(dir, text) {
     diag.recent.push(dir + " " + String(text).slice(0, 700));
     if (diag.recent.length > 60) diag.recent.shift();
@@ -1056,10 +1075,10 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.20", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.21", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
       http: httpSeen, streams: diag.streams, fromStreams: diag.streamSamples, sent: diag.sentSamples, sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
-      chat: diag.chat, ownChat: diag.own, poll: { ...diag.poll, samples: diag.poll.samples.filter((x) => x.bt !== 40 && x.bt !== 45).slice(0, 15) }, dcMsgs: diag.dcMsgs, binSamples: diag.binSamples, audio: diag.id3, me: (() => { const m = self(); return m.username ? "@" + m.username : (m.id ? "id " + m.id : null); })(), meFrom: viewerMe ? "x viewer" : "cookie", joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
+      chat: diag.chat, ownChat: diag.own, poll: { ...diag.poll, samples: diag.poll.samples.filter((x) => x.bt !== 40 && x.bt !== 45).slice(0, 15) }, dcMsgs: diag.dcMsgs, liveTopics: diag.topics, liveSubscriptions: diag.subs, binSamples: diag.binSamples, audio: diag.id3, me: (() => { const m = self(); return m.username ? "@" + m.username : (m.id ? "id " + m.id : null); })(), meFrom: viewerMe ? "x viewer" : "cookie", joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
       iframes: [...document.querySelectorAll("iframe")].slice(0, 20).map((f) => (f.getAttribute("src") || "(no src)").split("?")[0].slice(0, 150) + (f.getAttribute("sandbox") != null ? " [sandbox]" : "")), wmsgs: diag.wmsgs, fromWorkers: diag.wsamples, toWorkers: diag.wout,
       spaceOnPage: !!document.querySelector('[data-testid*="pace" i], [aria-label*="Space" i]'),
       knownIds: ids.size, unnamed: unresolvedSamples, recent: diag.recent.slice(-40),
