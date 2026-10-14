@@ -68,13 +68,13 @@ function chatClose(tabId) {
 chrome.tabs.onRemoved.addListener((tabId) => chatClose(tabId));
 
 // Ask X's chat server for messages since the last cursor (used when the page can't read the reply itself).
-async function chatPoll(tabId, { endpoint, token, cursor }) {
+async function chatPoll(tabId, { endpoint, token, cursor, since }) {
   if (!CHAT_HOST.test(endpoint || "") || !token) return;
   let out;
   try {
     const r = await fetch(endpoint.replace(/\/$/, "") + "/chatapi/v1/history", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ access_token: token, cursor: cursor || "", limit: 1000, quick_get: true }),
+      body: JSON.stringify({ access_token: token, cursor: cursor || "", limit: 1000, quick_get: true, since }),
     });
     const json = await r.json().catch(() => null);
     out = { status: r.status, json: r.ok ? json : null, error: r.ok ? null : "http " + r.status };

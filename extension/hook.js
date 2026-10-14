@@ -181,31 +181,49 @@
       clearInterval(this.timer);
       this.timer = setInterval(() => { if (this.cfg) post("chatopen", this.cfg); }, 20000);
       // and, in parallel, ask X's chat server for new messages every few seconds over a normal web request
-      this.joinedAt = Date.now(); this.cursor = ""; this.via = "page"; this.fails = 0; this.rounds = 0;
+      this.joinedAt = Date.now(); this.cursor = ""; this.via = "page"; this.fails = 0; this.rounds = 0; this.sinceMode = "ms"; diag.poll.since = "ms";
       clearTimeout(this.pollTimer); this.pollTimer = setTimeout(() => this.poll(), 1500);
     },
     async poll() {
       const cfg = this.cfg;
       if (!cfg) return;
       if (diag.own.frames > 0 && /listening/.test(diag.own.status)) { diag.poll.status = "not needed: live connection works"; return; }
-      if (this.via === "background") { post("chatpoll", { ...cfg, cursor: this.cursor }); this.pollTimer = setTimeout(() => this.poll(), 3000); return; }
+      const sinceMs = this.joinedAt - 30000;
+      const since = this.sinceMode === "ns" ? sinceMs * 1e6 : this.sinceMode === "s" ? Math.floor(sinceMs / 1000) : sinceMs;
+      const req = { access_token: cfg.token, cursor: this.cursor, limit: 1000, quick_get: true, since };
+      if (this.via === "background") { post("chatpoll", { ...cfg, cursor: this.cursor, since }); this.pollTimer = setTimeout(() => this.poll(), 3000); return; }
+      let delay = 3000;
       try {
         const r = await plainFetch(cfg.endpoint.replace(/\/$/, "") + "/chatapi/v1/history", {
-          method: "POST", headers: { "content-type": "application/json" }, credentials: "omit",
-          body: JSON.stringify({ access_token: cfg.token, cursor: this.cursor, limit: 1000, quick_get: true }),
+          method: "POST", headers: { "content-type": "application/json" }, credentials: "omit", body: JSON.stringify(req),
         });
         diag.poll.http = r.status; diag.poll.via = "page";
         const j = await r.json().catch(() => null);
         if (!r.ok || !j) throw new Error("http " + r.status);
         this.fails = 0;
-        takeHistory(j, "poll");
-        if (typeof j.cursor === "string") this.cursor = j.cursor;
+        delay = this.afterPage(j);
       } catch (e) {
         diag.poll.lastError = String(e && e.message || e).slice(0, 120);
         // a blocked cross-site read: let the extension background do the request instead
         if (++this.fails >= 2 && this.via === "page") { this.via = "background"; diag.poll.via = "background"; }
       }
-      if (this.cfg === cfg) this.pollTimer = setTimeout(() => this.poll(), 3000);
+      if (this.cfg === cfg) this.pollTimer = setTimeout(() => this.poll(), delay);
+    },
+    // returns how long to wait before the next check: fast while catching up to "now", 3s once caught up
+    afterPage(j) {
+      const info = takeHistory(j, "poll");
+      const oldCursor = this.cursor;
+      if (typeof j.cursor === "string") this.cursor = j.cursor;
+      const behind = info.newest && info.newest < this.joinedAt - 60000;
+      diag.poll.lagMin = info.newest ? Math.round((Date.now() - info.newest) / 60000) : diag.poll.lagMin;
+      if (behind && this.rounds === 1 && this.sinceMode !== "none") {
+        // the server ignored "since" in this unit: try the next unit, then give up on it and fast-forward
+        this.sinceMode = this.sinceMode === "ms" ? "ns" : this.sinceMode === "ns" ? "s" : "none";
+        diag.poll.since = this.sinceMode; this.rounds = 0; this.cursor = this.sinceMode === "none" ? this.cursor : "";
+        return 100;
+      }
+      if (behind && this.cursor && this.cursor !== oldCursor && info.count > 0) { diag.poll.catchUpPages = (diag.poll.catchUpPages || 0) + 1; return 60; }
+      return 3000;
     },
     stop(why) {
       clearInterval(this.timer); this.timer = null;
@@ -239,23 +257,29 @@
         who: (p.sender && p.sender.username) || b.username || undefined, ts: b.timestamp || p.timestamp || m.timestamp || undefined };
     } catch { return { raw: String(m).slice(0, 80) }; }
   }
-  // Whatever the first check returns is history from before you looked; everything new after that counts.
+  // Count only what happened after you joined; return how far along the history we are.
   function takeHistory(j, src) {
     const list = Array.isArray(j) ? j : (j.messages || j.Messages || j.events || []);
     if (!diag.poll.keys) diag.poll.keys = Array.isArray(j) ? ["(array)"] : Object.keys(j).slice(0, 12);
     diag.poll.total += list.length;
-    const first = !ownChat.rounds; ownChat.rounds = (ownChat.rounds || 0) + 1;
-    diag.poll.rounds = ownChat.rounds;
+    ownChat.rounds = (ownChat.rounds || 0) + 1; diag.poll.rounds = (diag.poll.rounds || 0) + 1;
+    const cutoff = (ownChat.joinedAt || 0) - 30000;
+    let newest = 0;
     for (const m of list) {
+      const t = msgTime(m);
+      if (t && t > newest) newest = t;
       const k = msgKey(m);
-      const isNew = firstTime(k);
-      if (diag.poll.samples.length < 30) diag.poll.samples.push(Object.assign(describeMsg(m), { got: first ? "before-you-looked" : isNew ? "counted" : "dup" }));
-      if (!isNew) continue;
-      if (first) { diag.poll.baseline++; continue; }
+      if (!firstTime(k)) continue;
+      const old = t && t < cutoff;
+      const d = describeMsg(m);
+      if (d.bt === 2 && diag.poll.samples.length < 30) diag.poll.samples.push(Object.assign(d, { got: old ? "old" : "counted", ageMin: t ? Math.round((Date.now() - t) / 60000) : null }));
+      if (old) { diag.poll.old = (diag.poll.old || 0) + 1; continue; }
       diag.poll.kept++;
       if (!state.connected) { state.connected = true; render(); }
       onFrame(typeof m === "string" ? m : JSON.stringify(m), src);
     }
+    if (newest) diag.poll.newestAgeMin = Math.round((Date.now() - newest) / 60000);
+    return { newest, count: list.length };
   }
 
   // Long-running responses (live event streams): read a copy as it arrives and look for reactions.
@@ -653,12 +677,13 @@
       const text = new TextDecoder().decode(u8);
       const trimmed = text.trim();
       const jsons = (trimmed[0] === "{" || trimmed[0] === "[") && safe(trimmed) ? [safe(trimmed)] : extractJsons(text);
-      if (diag.binSamples.length < 25) {
+      if (diag.binSamples.length < 25 && !/Hydra(Participants|AudioLevel)|JSONMetadata/.test(label + " " + text.slice(0, 40))) {
         const smp = src + " " + (label || "") + " " + u8.length + "B json:" + jsons.length + " " + previewBytes(u8).slice(0, 400);
         diag.binSamples.push(smp);
         if (!IS_TOP) toTop({ note: "sample " + smp.slice(0, 190) });
       }
       for (const o of jsons) {
+        if (o && o.UserName && o.UserId) { remember(o.UserId, o.UserName); continue; }
         let ev = null; try { ev = parse(JSON.stringify(o)); } catch { ev = null; }
         if (ev) handle(ev, src);
       }
@@ -951,7 +976,7 @@
     if (e.data.type === "chathistory" && ownChat.cfg) {
       const d = e.data.data || {};
       diag.poll.http = d.status; if (d.error) diag.poll.lastError = String(d.error).slice(0, 120);
-      if (d.json) { takeHistory(d.json, "poll"); if (typeof d.json.cursor === "string") ownChat.cursor = d.json.cursor; }
+      if (d.json) { const wait = ownChat.afterPage(d.json); if (wait < 3000) { clearTimeout(ownChat.pollTimer); ownChat.pollTimer = setTimeout(() => ownChat.poll(), wait); } }
       return;
     }
     if (e.data.type === "chatstatus") { diag.own.status = String(e.data.data || "").slice(0, 160); if (/^closed|^gave up/.test(diag.own.status) && state.connected && !diag.hooked && !ownChat.cfg) { state.connected = false; render(); } return; }
@@ -1031,7 +1056,7 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.19", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.20", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
       http: httpSeen, streams: diag.streams, fromStreams: diag.streamSamples, sent: diag.sentSamples, sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
       chat: diag.chat, ownChat: diag.own, poll: { ...diag.poll, samples: diag.poll.samples.filter((x) => x.bt !== 40 && x.bt !== 45).slice(0, 15) }, dcMsgs: diag.dcMsgs, binSamples: diag.binSamples, audio: diag.id3, me: (() => { const m = self(); return m.username ? "@" + m.username : (m.id ? "id " + m.id : null); })(), meFrom: viewerMe ? "x viewer" : "cookie", joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
