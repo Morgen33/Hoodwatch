@@ -181,7 +181,7 @@
       clearInterval(this.timer);
       this.timer = setInterval(() => { if (this.cfg) post("chatopen", this.cfg); }, 20000);
       // and, in parallel, ask X's chat server for new messages every few seconds over a normal web request
-      this.joinedAt = Date.now(); this.cursor = ""; this.via = "page"; this.fails = 0;
+      this.joinedAt = Date.now(); this.cursor = ""; this.via = "page"; this.fails = 0; this.rounds = 0;
       clearTimeout(this.pollTimer); this.pollTimer = setTimeout(() => this.poll(), 1500);
     },
     async poll() {
@@ -232,15 +232,26 @@
       return !t ? null : t > 1e14 ? Math.round(t / 1e6) : t > 1e11 ? t : t * 1000;
     } catch { return null; }
   }
+  function describeMsg(m) {
+    try {
+      const p = safe(m.payload) || {}; const b = safe(p.body) || {};
+      return { k: m.kind, pk: p.kind, bt: b.type, body: typeof b.body === "string" ? b.body.slice(0, 16) : undefined,
+        who: (p.sender && p.sender.username) || b.username || undefined, ts: b.timestamp || p.timestamp || m.timestamp || undefined };
+    } catch { return { raw: String(m).slice(0, 80) }; }
+  }
+  // Whatever the first check returns is history from before you looked; everything new after that counts.
   function takeHistory(j, src) {
     const list = Array.isArray(j) ? j : (j.messages || j.Messages || j.events || []);
     if (!diag.poll.keys) diag.poll.keys = Array.isArray(j) ? ["(array)"] : Object.keys(j).slice(0, 12);
     diag.poll.total += list.length;
+    const first = !ownChat.rounds; ownChat.rounds = (ownChat.rounds || 0) + 1;
+    diag.poll.rounds = ownChat.rounds;
     for (const m of list) {
       const k = msgKey(m);
-      if (!firstTime(k)) continue;
-      const t = msgTime(m);
-      if (t && ownChat.joinedAt && t < ownChat.joinedAt - 15000) continue; // only what happens after you joined
+      const isNew = firstTime(k);
+      if (diag.poll.samples.length < 30) diag.poll.samples.push(Object.assign(describeMsg(m), { got: first ? "before-you-looked" : isNew ? "counted" : "dup" }));
+      if (!isNew) continue;
+      if (first) { diag.poll.baseline++; continue; }
       diag.poll.kept++;
       if (!state.connected) { state.connected = true; render(); }
       onFrame(typeof m === "string" ? m : JSON.stringify(m), src);
@@ -485,7 +496,7 @@
   // ---------- websocket hook ----------
   // X has moved the chat around before, so match the socket loosely and read text or binary frames.
   const CHAT_WS = /chatapi|chatnow|chatman|pscp\.tv|periscope/i;
-  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [], subframes: [], own: { status: "idle", opens: 0, frames: 0 }, poll: { via: null, http: null, keys: null, total: 0, kept: 0, lastError: null } };
+  const diag = { sockets: [], hooked: 0, frames: 0, parsed: 0, recent: [], sse: [], workers: [], rtc: 0, channels: [], wmsgs: 0, wsamples: [], wout: [], chat: null, frames_: 0, streams: [], streamSamples: [], sentSamples: [], subframes: [], own: { status: "idle", opens: 0, frames: 0 }, poll: { via: null, http: null, keys: null, total: 0, kept: 0, baseline: 0, rounds: 0, lastError: null, samples: [] } };
   function note(dir, text) {
     diag.recent.push(dir + " " + String(text).slice(0, 700));
     if (diag.recent.length > 60) diag.recent.shift();
@@ -923,7 +934,7 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.17", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.18", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
       http: httpSeen, streams: diag.streams, fromStreams: diag.streamSamples, sent: diag.sentSamples, sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
       chat: diag.chat, ownChat: diag.own, poll: diag.poll, me: (() => { const m = self(); return m.username ? "@" + m.username : (m.id ? "id " + m.id : null); })(), meFrom: viewerMe ? "x viewer" : "cookie", joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,

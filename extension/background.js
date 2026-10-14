@@ -53,8 +53,8 @@ function chatConnect(tabId, c) {
     if (c.stopped) return;
     c.codes = (c.codes || []).concat(e.code + (e.reason ? ":" + String(e.reason).slice(0, 60) : "")).slice(-6);
     chatStatus(tabId, "closed " + e.code + (e.reason ? " " + String(e.reason).slice(0, 80) : ""));
-    if (c.tries < 6) { const wait = 2000 * Math.pow(2, c.tries++); c.timer = setTimeout(() => chatConnect(tabId, c), wait); }
-    else chatStatus(tabId, "gave up after 6 tries (close codes: " + c.codes.join(", ") + ")");
+    if (c.tries < 2) { const wait = 2000 * Math.pow(2, c.tries++); c.timer = setTimeout(() => chatConnect(tabId, c), wait); }
+    else chatStatus(tabId, "gave up (close codes: " + c.codes.join(", ") + ")");
   };
 }
 
