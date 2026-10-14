@@ -326,6 +326,7 @@
           if (/stopWatching/i.test(url) && IS_TOP) { ownChat.stop("left the Space"); state.connected = false; if (state.room) post("leave", { room: state.room }); render(); }
           if (init && init.body) outgoingFromRequest(url, init.body);
           if (/accessChat/i.test(url)) p.then((r) => r.clone().json()).then(onAccessChat).catch(() => {});
+          if (VIEWER_URL.test(String(url).split("?")[0])) p.then((r) => r.clone().json()).then(onViewer).catch(() => {});
           else if (SPACE_API.test(url)) p.then((r) => r.clone().json()).then(learn).catch(() => {});
           if (STREAMY.test(String(url).split("?")[0]) && !/accessChat|AudioSpaceById/i.test(url)) p.then((r) => tapStream(r, (where ? where + " " : "") + String(url).split("?")[0].split("/").slice(-2).join("/"))).catch(() => {});
         }
@@ -346,6 +347,9 @@
         this.__tiUrl = String(url || "");
         if (url) trackHttp(url, where);
         if (url && /stopWatching/i.test(String(url)) && IS_TOP) { ownChat.stop("left the Space"); state.connected = false; if (state.room) post("leave", { room: state.room }); render(); }
+        if (url && VIEWER_URL.test(String(url).split("?")[0])) {
+          this.addEventListener("load", () => { try { onViewer(this.responseType === "json" ? this.response : safe(this.responseText)); } catch { /* ignore */ } });
+        }
         if (url && /accessChat/i.test(String(url))) {
           this.addEventListener("load", () => { try { onAccessChat(this.responseType === "json" ? this.response : safe(this.responseText)); } catch { /* ignore */ } });
         } else if (url && SPACE_API.test(String(url))) {
@@ -777,7 +781,28 @@
   // ---------- the host's own reactions ----------
   // X doesn't echo your own reactions back over the socket, so catch them on the way out.
   const selfSent = [];
+  let viewerMe = null;
+  const VIEWER_URL = /\/graphql\/[^/]+\/(Viewer|ViewerUser|useViewer)\b|viewer_context\.json|account\/settings\.json|useSubscriptionsPaymentFailureQuery|useFetchProductSubscriptionsQuery/i;
+  function onViewer(j) {
+    try {
+      const d = j && (j.data || j);
+      const v = d && (d.viewer || d.viewer_v2 || d.viewer_context);
+      const r = v && v.user_results && v.user_results.result;
+      let id = r && r.rest_id ? String(r.rest_id) : null;
+      if (!id && r && typeof r.id === "string") { try { const m = atob(r.id).match(/^User:(\d+)$/); if (m) id = m[1]; } catch { /* ignore */ } }
+      const handle = r && ((r.core && r.core.screen_name) || (r.legacy && r.legacy.screen_name)) || (j && j.screen_name) || null;
+      const name = r && ((r.core && r.core.name) || (r.legacy && r.legacy.name)) || null;
+      if (handle && id) remember(id, handle, name);
+      const keep = viewerMe && !viewerMe.id ? viewerMe : null; // a handle we learned before we knew the id
+      if (id && (!viewerMe || viewerMe.id !== id || (handle && !viewerMe.username))) viewerMe = { id, username: handle || (keep && keep.username) || (ids.get(id) || {}).username || null, displayName: name || (keep && keep.displayName) || (ids.get(id) || {}).displayName || null };
+      else if (!id && handle && (!viewerMe || !viewerMe.username)) viewerMe = Object.assign(viewerMe || { id: null }, { username: handle });
+    } catch { /* ignore */ }
+  }
   function self() {
+    if (viewerMe && (viewerMe.id || viewerMe.username)) {
+      const k = viewerMe.id && ids.get(viewerMe.id);
+      return { id: viewerMe.id, username: viewerMe.username || (k && k.username) || null, displayName: viewerMe.displayName || (k && k.displayName) || null };
+    }
     let cookie = "";
     try { cookie = document.cookie || ""; } catch { /* no cookie access: treat as unknown */ }
     const m = cookie.match(/(?:^|;\s*)twid=("?)u(?:%3D|=)(\d+)\1/);
@@ -898,10 +923,10 @@
 
   function copyDebug() {
     const text = JSON.stringify({
-      v: "tappedin-1.16", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
+      v: "tappedin-1.17", page: location.pathname, room: state.room, connected: state.connected, count: state.count,
       sockets: diag.sockets, hooked: diag.hooked, frames: diag.frames, parsed: diag.parsed,
       http: httpSeen, streams: diag.streams, fromStreams: diag.streamSamples, sent: diag.sentSamples, sse: diag.sse, workers: diag.workers, rtc: diag.rtc, channels: diag.channels,
-      chat: diag.chat, ownChat: diag.own, poll: diag.poll, joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
+      chat: diag.chat, ownChat: diag.own, poll: diag.poll, me: (() => { const m = self(); return m.username ? "@" + m.username : (m.id ? "id " + m.id : null); })(), meFrom: viewerMe ? "x viewer" : "cookie", joinedHint, hiddenFrames: diag.frames_, subframes: diag.subframes,
       iframes: [...document.querySelectorAll("iframe")].slice(0, 20).map((f) => (f.getAttribute("src") || "(no src)").split("?")[0].slice(0, 150) + (f.getAttribute("sandbox") != null ? " [sandbox]" : "")), wmsgs: diag.wmsgs, fromWorkers: diag.wsamples, toWorkers: diag.wout,
       spaceOnPage: !!document.querySelector('[data-testid*="pace" i], [aria-label*="Space" i]'),
       knownIds: ids.size, unnamed: unresolvedSamples, recent: diag.recent.slice(-40),
